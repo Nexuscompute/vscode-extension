@@ -1,4 +1,193 @@
-# Snyk Security - Code and Open Source Dependencies Changelog
+# Snyk Security Changelog
+
+## [2.20.0]
+- reduce hover verbosity to only title and description
+- If $/snyk.hasAuthenticated transmits an API URL, this is saved in the settings.
+- Added CLI release channel.
+- Added option to change base URL to download CLI.
+- Run Snyk language Server from the CLI extension.
+- Change default CLI download path to be in extension directory.
+- Delete sentry reporting.
+- send analytics event "plugin installed" the first time the extension is started
+
+## [2.19.2]
+- Update download endpoint to downloads.snyk.io.
+- Send correct FixId to AI Fix endpoint.
+- Hide AI Fix div if no fixes found.
+
+## [2.19.1]
+- Adjust OSS panel font size
+
+## [2.19.0]
+- Moved delta scan preview setting to settings page.
+- New error message in UI when net new scan is done on an invalid repository. Net new scans only work on Git.
+- Clear in Memory cache when branch is changed.
+- Added Clear Persisted Cache command.
+- Add support for ai fix feedback analytic when pressing apply on a fix.
+
+## [2.18.2]
+- Update Language Server Protocol version to 15.
+
+## [2.18.0]
+- Added base branch selection for IaC and OSS
+
+## [2.17.0]
+- render IaC via Language Server
+
+## [2.16.3]
+- fix readability of `code` elements within the **overview** section when using high-contrast themes (both dark and light). Text color now matches the background.
+
+## [2.16.2]
+- updated the language server protocol version to 14 to support new communication model.
+
+## [2.16.1]
+- updated the language server protocol version to 13 to support delta findings.
+- added setting for choosing authentication method
+- renamed vulnerabilities to issues
+- only display DeepCode AI fix tree node when issues were found
+
+## [2.16.0]
+- Reorganize settings page into categorized sections:
+  - General Settings
+  - Product Selection
+  - Severity Selection
+  - Project Settings
+  - Executable Settings
+  - User Experience
+  - Advanced
+
+## [2.15.0]
+- Sync with LS to retrieve and persist folderConfigs changes.
+- Add command to select the base branch.
+
+## [2.14.0]
+- Add UI components for selecting a base branch for delta findings for Code and Code Quality behind a feature flag.
+
+### [2.13.1]
+- Refactor the Suggestion Panel for OSS so it's more secure and will be supported in other IDEs
+
+## [2.13.0]
+- Fix `.suggestion` class to ensure it is scrollable and not overlapped by the `.suggestion-actions` fixed element. This change prevents the suggestion content from being hidden.
+- transmit required protocol version to language server
+- Remove unused stylesheet and refactor stylesheets
+
+## [2.12.3]
+- Fix a bug in AI Applyfix on Windows.
+- Changes some of the colours used in the HTML panel so it's consistent with designs.
+
+## [2.12.2]
+- Refactors the feature flag logic into its own service.
+- Fix multi-file links in the DataFlow HTML panel.
+
+## [2.12.1]
+- Fix applying AI fixes on Windows.
+- Add CSS rules for `.light-only` and `.dark-only` to the LSP implementation. This allows the LSP to apply different styles based on the current theme.
+- Update to LS protocol version 12.
+
+## [2.12.0]
+- Fix Code Suggestion rendering issue on Windows.
+- Renders the AI Fix panel and adds more custom styling for VSCode.
+- Adds position line interaction.
+
+## [2.11.0]
+- Add warning messages in the Tree View for the issue view options used in consistent ignores.
+- Add Data Flow and Ignore Footer intractions for Consistent Ignores flows.
+- Fix endpoint computation based on custom endpoint.
+- Remove snyk/codeclient dependancy.
+
+## [2.10.0]
+- Injects custom styling for the HTML panel used by Snyk Code for consistent ignores.
+
+## [2.9.0]
+- Lower the strictness of custom endpoint regex validation so that single tenant APIs are allowed.
+
+## [2.8.0]
+- Add the Issue View Options panel to the Snyk Security Settings.
+
+## [2.7.0]
+- Fetch Snyk Consistent Ignores feature flag from the Language Server
+- Conditionally render Code details panel from Language Server
+
+## [2.6.1]
+- Improve the validation of the custom endpoint and change the default to https://api.snyk.io.
+
+## [2.6.0]
+- Improve UX of AI fixes by adding previews and options
+
+## [2.4.1]
+- updated the language server protocol version to 11 to support global ignores
+
+## [2.4.0]
+- Added the [ Ignored ] text if the finding should be marked as ignored.
+
+## [2.3.10]
+### Added
+- Added the [ Ignored ] text if the finding should be marked as ignored.
+
+## [2.3.9]
+### Fixes
+- do not restrict activation of extension (auto-scan on startup)
+
+## [2.3.8]
+
+### Fixes
+- fix: shortened plugin name to just Snyk Security
+
+## [2.3.6]
+
+### Changes
+- Removed Amplitude telemetry and corresponding setting from VSCode
+
+## [2.3.5]
+
+### Documentation
+
+- Updated the `README.md` file to correct and improve the links to the Visual Studio Code extension documentation.
+
+## [2.3.4]
+
+### Fixes
+
+- Changing the custom endpoints has an effect on whether we sent Amplitude events or not
+
+## [2.3.3]
+
+### Fixed
+
+- Snyk Code: Added `isExampleLineEncoded` boolean flag to `CommitChangeLine` type to prevent re-encoding strings in the UI of the example code blocks.
+
+## [2.3.2]
+
+### Fixed
+
+- Only send Amplitude events when connected to a MT US environment
+
+## [2.2.1]
+
+### Fixed
+
+- Snyk Code: Optimized performance by caching DOM element references in `suggestion-details`. This minimizes repetitive DOM queries, enhancing the responsiveness and efficiency of the webview.
+- Snyk Code: Corrected the visibility toggling behavior in the `#suggestion-details` section. Replaced inline styling with CSS class-based approach.
+
+## [2.2.0]
+
+### Added
+
+- Snyk Code: New UI section `#suggestion-details` for displaying suggestion details in snykCode.
+- Snyk Code: Added a collapsible section for suggestion details. This includes a 'Read more' button to toggle the full display of suggestion details.
+
+## [2.1.0]
+
+### Added
+
+- Snyk LS: Snyk Open Source Security features now use Language Server backend
+- Snyk OSS: Squiggly warning underlines for direct and transitive vulnerabilities
+- Snyk OSS: Squiggly underlines colour coded based on severity
+- Snyk OSS: Vulnerability count text includes transitive vulnerabilities
+- Snyk OSS: Vulnerability count text includes breakdown of vulnerabilities by severity
+- Snyk OSS: Hovers lists vulnerabilities and shows summary (without typo)
+- Snyk OSS: Hovers show information from security.snyk.io/vuln database
+- Snyk OSS: CodeActions shows actions available for all vulnerabilities
 
 ## [1.26.1]
 

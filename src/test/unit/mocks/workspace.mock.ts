@@ -1,5 +1,3 @@
-import * as os from 'os';
-import path from 'path';
 import { IVSCodeWorkspace } from '../../../snyk/common/vscode/workspace';
 
 export function stubWorkspaceConfiguration<T>(configSetting: string, returnValue: T | undefined): IVSCodeWorkspace {
@@ -8,13 +6,8 @@ export function stubWorkspaceConfiguration<T>(configSetting: string, returnValue
       if (`${identifier}.${key}` === configSetting) return returnValue;
       return undefined;
     },
+    updateConfiguration(_configurationIdentifier, _section, _value, _configurationTarget, _overrideInLanguage) {
+      return Promise.resolve();
+    },
   } as IVSCodeWorkspace;
 }
-
-export const workspaceMock = {
-  getWorkspaceFolders() {
-    return [workspaceFolder];
-  },
-} as IVSCodeWorkspace;
-
-export const workspaceFolder = path.join(os.homedir(), 'snyk/project');

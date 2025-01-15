@@ -1,7 +1,7 @@
 import assert from 'assert';
 import sinon from 'sinon';
 import { CliExecutable } from '../../../../snyk/cli/cliExecutable';
-import { IConfiguration } from '../../../../snyk/common/configuration/configuration';
+import { FolderConfig, IConfiguration } from '../../../../snyk/common/configuration/configuration';
 import { LanguageClientMiddleware } from '../../../../snyk/common/languageServer/middleware';
 import { ServerSettings } from '../../../../snyk/common/languageServer/settings';
 import { User } from '../../../../snyk/common/user';
@@ -12,30 +12,38 @@ import type {
   ResponseError,
 } from '../../../../snyk/common/vscode/types';
 import { defaultFeaturesConfigurationStub } from '../../mocks/configuration.mock';
-import { extensionContextMock } from '../../mocks/extensionContext.mock';
+import { ExtensionContext } from '../../../../snyk/common/vscode/extensionContext';
 
 suite('Language Server: Middleware', () => {
   let configuration: IConfiguration;
   let user: User;
+  let extensionContextMock: ExtensionContext;
+  let contextGetGlobalStateValue: sinon.SinonStub;
 
   setup(() => {
     user = { anonymousId: 'anonymous-id' } as User;
     configuration = {
-      shouldReportEvents: false,
+      getAuthenticationMethod(): string {
+        return 'oauth';
+      },
       shouldReportErrors: false,
-      snykOssApiEndpoint: 'https://dev.snyk.io/api',
+      snykApiEndpoint: 'https://dev.snyk.io/api',
       getAdditionalCliParameters: () => '',
       organization: 'org',
       getToken: () => Promise.resolve('token'),
       isAutomaticDependencyManagementEnabled: () => true,
-      getCliPath: () => '/path/to/cli',
+      getCliPath: (): Promise<string> => Promise.resolve('/path/to/cli'),
       getInsecure(): boolean {
         return true;
       },
-      getPreviewFeatures: () => {
-        return {
-          advisor: false,
-        };
+      getDeltaFindingsEnabled(): boolean {
+        return false;
+      },
+      getPreviewFeatures() {
+        return { advisor: false, ossQuickfixes: false };
+      },
+      getOssQuickFixCodeActionsEnabled(): boolean {
+        return false;
       },
       getFeaturesConfiguration() {
         return defaultFeaturesConfigurationStub;
@@ -47,7 +55,19 @@ suite('Language Server: Middleware', () => {
         low: true,
       },
       getTrustedFolders: () => ['/trusted/test/folder'],
+      getFolderConfigs(): FolderConfig[] {
+        return [];
+      },
     } as IConfiguration;
+    extensionContextMock = {
+      extensionPath: 'test/path',
+      getGlobalStateValue: contextGetGlobalStateValue,
+      updateGlobalStateValue: sinon.fake(),
+      setContext: sinon.fake(),
+      subscriptions: [],
+      addDisposables: sinon.fake(),
+      getExtensionUri: sinon.fake(),
+    } as unknown as ExtensionContext;
   });
 
   teardown(() => {
@@ -55,7 +75,7 @@ suite('Language Server: Middleware', () => {
   });
 
   test('Configuration request should translate settings', async () => {
-    const middleware = new LanguageClientMiddleware(configuration, user);
+    const middleware = new LanguageClientMiddleware(configuration, user, extensionContextMock);
     const params: ConfigurationParams = {
       items: [
         {
@@ -82,25 +102,21 @@ suite('Language Server: Middleware', () => {
     assert.strictEqual(serverResult.activateSnykCodeQuality, 'true');
     assert.strictEqual(serverResult.activateSnykOpenSource, 'false');
     assert.strictEqual(serverResult.activateSnykIac, 'true');
-    assert.strictEqual(serverResult.endpoint, configuration.snykOssApiEndpoint);
+    assert.strictEqual(serverResult.endpoint, configuration.snykApiEndpoint);
     assert.strictEqual(serverResult.additionalParams, configuration.getAdditionalCliParameters());
     assert.strictEqual(serverResult.sendErrorReports, `${configuration.shouldReportErrors}`);
     assert.strictEqual(serverResult.organization, `${configuration.organization}`);
-    assert.strictEqual(serverResult.enableTelemetry, `${configuration.shouldReportEvents}`);
     assert.strictEqual(
       serverResult.manageBinariesAutomatically,
       `${configuration.isAutomaticDependencyManagementEnabled()}`,
     );
-    assert.strictEqual(
-      serverResult.cliPath,
-      CliExecutable.getPath(extensionContextMock.extensionPath, configuration.getCliPath()),
-    );
+    assert.strictEqual(serverResult.cliPath, await configuration.getCliPath());
     assert.strictEqual(serverResult.enableTrustedFoldersFeature, 'true');
     assert.deepStrictEqual(serverResult.trustedFolders, configuration.getTrustedFolders());
   });
 
   test('Configuration request should return an error', async () => {
-    const middleware = new LanguageClientMiddleware(configuration, user);
+    const middleware = new LanguageClientMiddleware(configuration, user, extensionContextMock);
     const params: ConfigurationParams = {
       items: [
         {

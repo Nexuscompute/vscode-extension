@@ -1,21 +1,24 @@
 import { strictEqual } from 'assert';
 import sinon from 'sinon';
-import { IAnalytics } from '../../../../snyk/common/analytics/itly';
 import { SNYK_IGNORE_ISSUE_COMMAND, SNYK_OPEN_ISSUE_COMMAND } from '../../../../snyk/common/constants/commands';
 import { CodeIssueData, Issue } from '../../../../snyk/common/languageServer/types';
 import { WorkspaceFolderResult } from '../../../../snyk/common/services/productService';
 import { ICodeActionAdapter, ICodeActionKindAdapter } from '../../../../snyk/common/vscode/codeAction';
 import { IVSCodeLanguages } from '../../../../snyk/common/vscode/languages';
-import { CodeActionKind, Range, TextDocument } from '../../../../snyk/common/vscode/types';
+import { CodeActionContext, CodeActionKind, Range, TextDocument } from '../../../../snyk/common/vscode/types';
 import { SnykCodeActionsProvider } from '../../../../snyk/snykCode/codeActions/codeIssuesActionsProvider';
 import { IssueUtils } from '../../../../snyk/snykCode/utils/issueUtils';
+import { IConfiguration } from '../../../../snyk/common/configuration/configuration';
 
 suite('Snyk Code actions provider', () => {
   let issuesActionsProvider: SnykCodeActionsProvider;
-  let logQuickFixIsDisplayed: sinon.SinonSpy;
+  let configuration: IConfiguration;
+  let codeResults: Map<string, WorkspaceFolderResult<CodeIssueData>>;
+  let codeActionAdapter: ICodeActionAdapter;
+  let codeActionKindAdapter: ICodeActionKindAdapter;
 
   setup(() => {
-    const codeResults = new Map<string, WorkspaceFolderResult<CodeIssueData>>();
+    codeResults = new Map<string, WorkspaceFolderResult<CodeIssueData>>();
     codeResults.set('folderName', [
       {
         filePath: '//folderName//test.js',
@@ -25,18 +28,13 @@ suite('Snyk Code actions provider', () => {
       } as unknown as Issue<CodeIssueData>,
     ]);
 
-    logQuickFixIsDisplayed = sinon.fake();
-    const analytics = {
-      logQuickFixIsDisplayed,
-    } as unknown as IAnalytics;
-
-    const codeActionAdapter = {
+    codeActionAdapter = {
       create: (_: string, _kind?: CodeActionKind) => ({
         command: {},
       }),
     } as ICodeActionAdapter;
 
-    const codeActionKindAdapter = {
+    codeActionKindAdapter = {
       getQuickFix: sinon.fake(),
     } as ICodeActionKindAdapter;
 
@@ -46,12 +44,18 @@ suite('Snyk Code actions provider', () => {
 
     sinon.stub(IssueUtils, 'createVsCodeRange').returns(rangeMock);
 
+    configuration = {
+      getFeatureFlag(_: string): boolean {
+        return true;
+      },
+    } as IConfiguration;
+
     issuesActionsProvider = new SnykCodeActionsProvider(
       codeResults,
       codeActionAdapter,
       codeActionKindAdapter,
       {} as IVSCodeLanguages,
-      analytics,
+      configuration,
     );
   });
 
@@ -59,7 +63,35 @@ suite('Snyk Code actions provider', () => {
     sinon.restore();
   });
 
-  test('Provides code actions', () => {
+  test('Provides code actions, inline ignores disabled', () => {
+    // arrange
+    const document = {
+      uri: {
+        fsPath: '//folderName//test.js',
+      },
+    } as unknown as TextDocument;
+
+    issuesActionsProvider = new SnykCodeActionsProvider(
+      codeResults,
+      codeActionAdapter,
+      codeActionKindAdapter,
+      {} as IVSCodeLanguages,
+      {
+        getFeatureFlag(_: string): boolean {
+          return false;
+        },
+      } as IConfiguration,
+    );
+
+    // act
+    const codeActions = issuesActionsProvider.provideCodeActions(document, {} as Range, {} as CodeActionContext);
+
+    // verify
+    strictEqual(codeActions?.length, 1);
+    strictEqual(codeActions[0].command?.command, SNYK_OPEN_ISSUE_COMMAND);
+  });
+
+  test('Provides code actions, inline ignores enabled', () => {
     // arrange
     const document = {
       uri: {
@@ -68,27 +100,12 @@ suite('Snyk Code actions provider', () => {
     } as unknown as TextDocument;
 
     // act
-    const codeActions = issuesActionsProvider.provideCodeActions(document, {} as Range);
+    const codeActions = issuesActionsProvider.provideCodeActions(document, {} as Range, {} as CodeActionContext);
 
     // verify
     strictEqual(codeActions?.length, 3);
     strictEqual(codeActions[0].command?.command, SNYK_OPEN_ISSUE_COMMAND);
     strictEqual(codeActions[1].command?.command, SNYK_IGNORE_ISSUE_COMMAND);
     strictEqual(codeActions[2].command?.command, SNYK_IGNORE_ISSUE_COMMAND);
-  });
-
-  test("Logs 'Quick Fix is Displayed' analytical event", () => {
-    // arrange
-    const document = {
-      uri: {
-        fsPath: '//folderName//test.js',
-      },
-    } as unknown as TextDocument;
-
-    // act
-    issuesActionsProvider.provideCodeActions(document, {} as Range);
-
-    // verify
-    strictEqual(logQuickFixIsDisplayed.calledOnce, true);
   });
 });

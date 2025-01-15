@@ -14,6 +14,7 @@ import { IVSCodeLanguages } from '../../common/vscode/languages';
 import { IacIssue } from '../issue';
 import { messages } from '../messages/analysis';
 import { IacIssueCommandArg } from './interfaces';
+import { IFolderConfigs } from '../../common/configuration/folderConfigs';
 
 export default class IacIssueTreeProvider extends ProductIssueTreeProvider<IacIssueData> {
   constructor(
@@ -22,8 +23,9 @@ export default class IacIssueTreeProvider extends ProductIssueTreeProvider<IacIs
     protected iacService: IProductService<IacIssueData>,
     protected configuration: IConfiguration,
     protected languages: IVSCodeLanguages,
+    protected readonly folderConfigs: IFolderConfigs,
   ) {
-    super(contextService, iacService, configuration, languages);
+    super(contextService, iacService, configuration, languages, folderConfigs);
   }
 
   getRootChildren(): TreeNode[] {
@@ -48,8 +50,11 @@ export default class IacIssueTreeProvider extends ProductIssueTreeProvider<IacIs
     return `${dir} - ${issueCount} ${issueCount === 1 ? 'issue' : 'issues'}`;
   }
 
-  getIssueFoundText(nIssues: number): string {
-    return `Snyk found ${!nIssues ? 'no issues! ✅' : `${nIssues} ${nIssues === 1 ? 'issue' : 'issues'}`}`;
+  getIssueFoundText(nIssues: number, _: number): string {
+    if (!nIssues) {
+      return '✅ Congrats! No issues found!';
+    }
+    return `Snyk found ${nIssues} issue${nIssues === 1 ? '' : 's'}`;
   }
 
   filterIssues(issues: Issue<IacIssueData>[]): Issue<IacIssueData>[] {

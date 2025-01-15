@@ -4,7 +4,7 @@ import { ReplaySubject } from 'rxjs';
 import sinon from 'sinon';
 import { v4 } from 'uuid';
 import { IAuthenticationService } from '../../../../snyk/base/services/authenticationService';
-import { IConfiguration } from '../../../../snyk/common/configuration/configuration';
+import { FolderConfig, IConfiguration } from '../../../../snyk/common/configuration/configuration';
 import { LanguageServer } from '../../../../snyk/common/languageServer/languageServer';
 import { ServerSettings } from '../../../../snyk/common/languageServer/settings';
 import { DownloadService } from '../../../../snyk/common/services/downloadService';
@@ -16,6 +16,8 @@ import { defaultFeaturesConfigurationStub } from '../../mocks/configuration.mock
 import { LoggerMock } from '../../mocks/logger.mock';
 import { windowMock } from '../../mocks/window.mock';
 import { stubWorkspaceConfiguration } from '../../mocks/workspace.mock';
+import { PROTOCOL_VERSION } from '../../../../snyk/common/constants/languageServer';
+import { ExtensionContext } from '../../../../snyk/common/vscode/extensionContext';
 
 suite('Language Server', () => {
   const authServiceMock = {} as IAuthenticationService;
@@ -24,6 +26,7 @@ suite('Language Server', () => {
   let configurationMock: IConfiguration;
   let languageServer: LanguageServer;
   let downloadServiceMock: DownloadService;
+  let extensionContextMock: ExtensionContext;
   const path = 'testPath';
   const logger = {
     info(_msg: string) {},
@@ -34,35 +37,40 @@ suite('Language Server', () => {
     },
   } as unknown as LoggerMock;
 
+  let contextGetGlobalStateValue: sinon.SinonStub;
+
   setup(() => {
     configurationMock = {
+      getAuthenticationMethod(): string {
+        return 'oauth';
+      },
       getInsecure(): boolean {
         return true;
       },
-      getCliPath(): string | undefined {
-        return path;
+      getDeltaFindingsEnabled(): boolean {
+        return false;
+      },
+      getCliPath(): Promise<string | undefined> {
+        return Promise.resolve(path);
       },
       getToken(): Promise<string | undefined> {
         return Promise.resolve('testToken');
       },
-      shouldReportEvents: true,
       shouldReportErrors: true,
-      getSnykLanguageServerPath(): string {
-        return path;
-      },
       getAdditionalCliParameters() {
         return '--all-projects -d';
       },
       isAutomaticDependencyManagementEnabled() {
         return true;
       },
+      getFeaturesConfiguration() {
+        return defaultFeaturesConfigurationStub;
+      },
       getPreviewFeatures() {
         return {
           advisor: false,
+          ossQuickfixes: false,
         };
-      },
-      getFeaturesConfiguration() {
-        return defaultFeaturesConfigurationStub;
       },
       severityFilter: {
         critical: true,
@@ -73,8 +81,21 @@ suite('Language Server', () => {
       getTrustedFolders(): string[] {
         return ['/trusted/test/folder'];
       },
+      getFolderConfigs(): FolderConfig[] {
+        return [];
+      },
       scanningMode: 'auto',
     } as IConfiguration;
+
+    extensionContextMock = {
+      extensionPath: 'test/path',
+      getGlobalStateValue: contextGetGlobalStateValue,
+      updateGlobalStateValue: sinon.fake(),
+      setContext: sinon.fake(),
+      subscriptions: [],
+      addDisposables: sinon.fake(),
+      getExtensionUri: sinon.fake(),
+    } as unknown as ExtensionContext;
 
     downloadServiceMock = {
       downloadReady$: new ReplaySubject<void>(1),
@@ -120,6 +141,7 @@ suite('Language Server', () => {
       authServiceMock,
       logger,
       downloadServiceMock,
+      extensionContextMock,
     );
     downloadServiceMock.downloadReady$.next();
 
@@ -169,6 +191,7 @@ suite('Language Server', () => {
       authServiceMock,
       new LoggerMock(),
       downloadServiceMock,
+      extensionContextMock,
     );
     downloadServiceMock.downloadReady$.next();
     await languageServer.start();
@@ -194,6 +217,7 @@ suite('Language Server', () => {
         authServiceMock,
         new LoggerMock(),
         downloadServiceMock,
+        extensionContextMock,
       );
     });
 
@@ -201,11 +225,11 @@ suite('Language Server', () => {
       const expectedInitializationOptions: ServerSettings = {
         activateSnykCodeSecurity: 'true',
         activateSnykCodeQuality: 'true',
+        enableDeltaFindings: 'false',
         activateSnykOpenSource: 'false',
         activateSnykIac: 'true',
         token: 'testToken',
         cliPath: 'testPath',
-        enableTelemetry: 'true',
         sendErrorReports: 'true',
         integrationName: 'VS_CODE',
         integrationVersion: '0.0.0',
@@ -219,7 +243,12 @@ suite('Language Server', () => {
         enableTrustedFoldersFeature: 'true',
         trustedFolders: ['/trusted/test/folder'],
         insecure: 'true',
+        requiredProtocolVersion: PROTOCOL_VERSION.toString(),
         scanningMode: 'auto',
+        folderConfigs: [],
+        authenticationMethod: 'oauth',
+        enableSnykOSSQuickFixCodeActions: 'false',
+        hoverVerbosity: 1,
       };
 
       deepStrictEqual(await languageServer.getInitializationOptions(), expectedInitializationOptions);
@@ -235,12 +264,13 @@ suite('Language Server', () => {
         authServiceMock,
         new LoggerMock(),
         downloadServiceMock,
+        extensionContextMock,
       );
 
       const initOptions = await languageServer.getInitializationOptions();
 
       strictEqual(initOptions.activateSnykCodeQuality, `true`);
-      strictEqual(initOptions.activateSnykCodeQuality, `true`);
+      strictEqual(initOptions.activateSnykCodeSecurity, `true`);
     });
 
     ['auto', 'manual'].forEach(expectedScanningMode => {

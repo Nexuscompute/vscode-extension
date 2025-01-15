@@ -1,5 +1,6 @@
 import { IWorkspaceTrust } from '../../common/configuration/trustedFolders';
 import { IContextService } from '../../common/services/contextService';
+import { DownloadService } from '../../common/services/downloadService';
 import { IOpenerService } from '../../common/services/openerService';
 import { IViewManagerService } from '../../common/services/viewManagerService';
 import { ExtensionContext } from '../../common/vscode/extensionContext';
@@ -17,19 +18,18 @@ export interface IBaseSnykModule {
 
   // Abstract methods
   runScan(): Promise<void>;
-  runOssScan(manual?: boolean): Promise<void>;
 }
 
 export interface ISnykLib {
   enableCode(): Promise<void>;
   checkAdvancedMode(): Promise<void>;
+  setupFeatureFlags(): Promise<void>;
 }
 
 export interface IExtension extends IBaseSnykModule, ISnykLib {
   context: ExtensionContext | undefined;
   activate(context: VSCodeExtensionContext): void;
+  stopLanguageServer(): Promise<void>;
   restartLanguageServer(): Promise<void>;
+  initDependencyDownload(): DownloadService;
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type errorType = Error | any;

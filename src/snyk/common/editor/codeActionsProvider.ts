@@ -1,38 +1,30 @@
-import { IAnalytics, SupportedQuickFixProperties } from '../../common/analytics/itly';
-import { IDE_NAME } from '../../common/constants/general';
-import { Issue } from '../../common/languageServer/types';
-import { ICodeActionKindAdapter } from '../../common/vscode/codeAction';
-import { CodeAction, CodeActionKind, CodeActionProvider, Range, TextDocument } from '../../common/vscode/types';
+import { Issue } from '../languageServer/types';
+import { ICodeActionKindAdapter } from '../vscode/codeAction';
+import { CodeAction, CodeActionContext, CodeActionProvider, Range, TextDocument } from '../vscode/types';
 import { ProductResult } from '../services/productService';
 
 export abstract class CodeActionsProvider<T> implements CodeActionProvider {
   protected readonly providedCodeActionKinds = [this.codeActionKindAdapter.getQuickFix()];
 
   constructor(
-    private readonly issues: ProductResult<T>,
+    protected readonly issues: ProductResult<T>,
     private readonly codeActionKindAdapter: ICodeActionKindAdapter,
-    private readonly analytics: IAnalytics,
   ) {}
 
-  abstract getActions(folderPath: string, document: TextDocument, issue: Issue<T>, issueRange: Range): CodeAction[];
-
-  abstract getAnalyticsActionTypes(): [string, ...string[]] &
-    [SupportedQuickFixProperties, ...SupportedQuickFixProperties[]];
+  abstract getActions(folderPath: string, document: TextDocument, issue: Issue<T>, issueRange?: Range): CodeAction[];
 
   abstract getIssueRange(issue: Issue<T>): Range;
 
-  getProvidedCodeActionKinds(): CodeActionKind[] {
-    return this.providedCodeActionKinds;
-  }
-
-  public provideCodeActions(document: TextDocument, clickedRange: Range): CodeAction[] | undefined {
+  public provideCodeActions(
+    document: TextDocument,
+    clickedRange: Range,
+    _context: CodeActionContext,
+  ): CodeAction[] | undefined {
     if (this.issues.size === 0) {
       return undefined;
     }
 
-    for (const result of this.issues.entries()) {
-      const folderPath = result[0];
-      const issues = result[1];
+    for (const [folderPath, issues] of this.issues.entries()) {
       if (issues instanceof Error || !issues) {
         continue;
       }
@@ -42,22 +34,15 @@ export abstract class CodeActionsProvider<T> implements CodeActionProvider {
         continue;
       }
 
-      const codeActions = this.getActions(folderPath, document, issue, range);
-      const analyticsType = this.getAnalyticsActionTypes();
-
-      this.analytics.logQuickFixIsDisplayed({
-        quickFixType: analyticsType,
-        ide: IDE_NAME,
-      });
-
-      // returns list of actions, all new actions should be added to this list
-      return codeActions;
+      // If an issue is found, return the actions
+      return this.getActions(folderPath, document, issue, range);
     }
 
+    // If no issues were found after checking all entries, return undefined
     return undefined;
   }
 
-  private findIssueWithRange(
+  protected findIssueWithRange(
     result: Issue<T>[],
     document: TextDocument,
     clickedRange: Range,

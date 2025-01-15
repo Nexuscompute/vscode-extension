@@ -3,30 +3,31 @@
 import { deepStrictEqual, strictEqual } from 'assert';
 import sinon from 'sinon';
 import { Configuration, PreviewFeatures } from '../../../snyk/common/configuration/configuration';
-import { SNYK_TOKEN_KEY } from '../../../snyk/common/constants/general';
 import {
+  ADVANCED_CLI_PATH,
+  ADVANCED_CLI_RELEASE_CHANNEL,
   ADVANCED_CUSTOM_ENDPOINT,
+  ADVANCED_CUSTOM_LS_PATH,
   FEATURES_PREVIEW_SETTING,
   SCANNING_MODE,
 } from '../../../snyk/common/constants/settings';
 import SecretStorageAdapter from '../../../snyk/common/vscode/secretStorage';
-import { ExtensionContext } from '../../../snyk/common/vscode/types';
 import { IVSCodeWorkspace } from '../../../snyk/common/vscode/workspace';
 import { extensionContextMock } from '../mocks/extensionContext.mock';
 import { stubWorkspaceConfiguration } from '../mocks/workspace.mock';
+import { extensionContext } from '../../../snyk/common/vscode/extensionContext';
+import { Platform } from '../../../snyk/common/platform';
+import path from 'path';
 
 suite('Configuration', () => {
   let workspaceStub: IVSCodeWorkspace;
-  let extensionContext: ExtensionContext;
 
   setup(() => {
     const tokenConfigSection = 'token';
 
     let token = '';
-
-    extensionContext = extensionContextMock;
-    SecretStorageAdapter.init(extensionContext);
-
+    SecretStorageAdapter.init(extensionContextMock);
+    extensionContext.setContext(extensionContextMock);
     const stub = sinon.stub().returns({
       getConfiguration(_configurationIdentifier, _section) {
         if (_section === tokenConfigSection) return token;
@@ -48,134 +49,42 @@ suite('Configuration', () => {
     sinon.restore();
   });
 
-  test('Snyk Code: production base url is returned when not in development', () => {
-    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, undefined);
-    const configuration = new Configuration(
-      {
-        SNYK_VSCE_DEVELOPMENT: '',
-      },
-      workspace,
-    );
-
-    strictEqual(configuration.snykCodeBaseURL, 'https://deeproxy.snyk.io');
-  });
-
-  test('Snyk Code: development base url is returned when in development', () => {
-    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, undefined);
-    const configuration = new Configuration(
-      {
-        SNYK_VSCE_DEVELOPMENT: '1',
-      },
-      workspace,
-    );
-    strictEqual(configuration.snykCodeBaseURL, 'https://deeproxy.snyk.io');
-  });
-
-  test('Snyk Code: base url respects custom endpoint configuration', () => {
-    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, 'http://custom.endpoint.com');
-    const configuration = new Configuration({}, workspace);
-
-    strictEqual(configuration.snykCodeBaseURL, 'http://deeproxy.custom.endpoint.com');
-  });
-
-  test('Snyk Code: base url respects single tenant endpoint configuration', () => {
-    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, 'https://app.custom.snyk.io/api');
-    const configuration = new Configuration({}, workspace);
-
-    strictEqual(configuration.snykCodeBaseURL, 'https://deeproxy.custom.snyk.io');
-  });
-
-  test('Snyk Code: code url respects custom endpoint configuration', () => {
-    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, 'https://custom.endpoint.com/api');
+  test('Snyk Code URL: respects custom endpoint configuration', () => {
+    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, 'https://api.custom.endpoint.com');
     const configuration = new Configuration({}, workspace);
 
     strictEqual(configuration.snykCodeUrl, 'https://app.custom.endpoint.com/manage/snyk-code?from=vscode');
   });
 
-  test('Snyk Code: code url respects single tenant endpoint configuration', () => {
-    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, 'https://app.custom.snyk.io/api');
+  test('Snyk Code URL: respects single tenant endpoint configuration', () => {
+    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, 'https://api.custom.snyk.io');
     const configuration = new Configuration({}, workspace);
 
     strictEqual(configuration.snykCodeUrl, 'https://app.custom.snyk.io/manage/snyk-code?from=vscode');
   });
 
-  test('Snyk Code: Custom base url is returned when in development and custom url specified', () => {
-    const customUrl = 'https://custom.url';
-    const configuration = new Configuration(
-      {
-        SNYK_VSCE_DEVELOPMENT: '1',
-        SNYK_VSCE_DEVELOPMENT_SNYKCODE_BASE_URL: customUrl,
-      },
-      workspaceStub,
-    );
-    strictEqual(configuration.snykCodeBaseURL, customUrl);
+  test('Snyk Code URL: respects FedRAMP endpoint configuration', () => {
+    const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, 'https://api.custom.snykgov.io');
+    const configuration = new Configuration({}, workspace);
+
+    strictEqual(configuration.snykCodeUrl, 'https://app.custom.snykgov.io/manage/snyk-code?from=vscode');
   });
 
-  test('Snyk Code: token returns snyk.io token when not in development', async () => {
-    const token = 'snyk-token';
-
-    const secretStorageStoreStub = sinon.stub(extensionContext.secrets, 'store').resolves();
-    const secretStorageGetStub = sinon.stub(extensionContext.secrets, 'get').resolves(token);
-
-    const configuration = new Configuration(process.env, workspaceStub);
-    await configuration.setToken(token);
-
-    strictEqual(await configuration.snykCodeToken, token);
-    secretStorageStoreStub.calledWith(SNYK_TOKEN_KEY, token);
-    strictEqual(secretStorageGetStub.calledOnce, true);
-  });
-
-  test('Snyk Code: token should be cleared if the retrieval method throws', async () => {
-    const token = 'snyk-token';
-
-    sinon.stub(extensionContext.secrets, 'store').resolves();
-    const secretStorageDeleteStub = sinon.stub(extensionContext.secrets, 'delete').resolves();
-    const secretStorageGetStub = sinon.stub(extensionContext.secrets, 'get').rejects('cannot get token');
-
-    const configuration = new Configuration(process.env, workspaceStub);
-    await configuration.setToken(token);
-
-    strictEqual(await configuration.snykCodeToken, '');
-    strictEqual(secretStorageGetStub.calledOnce, true);
-    strictEqual(secretStorageDeleteStub.calledOnce, true);
-  });
-
-  test('Snyk Code: token returns Snyk Code token when in development', async () => {
-    const token = 'test-token';
-    const snykCodeToken = 'snykCode-token';
-
-    const secretStorageStoreStub = sinon.stub(extensionContext.secrets, 'store').resolves();
-    const secretStorageGetStub = sinon.stub(extensionContext.secrets, 'get').resolves(token);
-
-    const configuration = new Configuration(
-      {
-        SNYK_VSCE_DEVELOPMENT: '1',
-        SNYK_VSCE_DEVELOPMENT_SNYKCODE_TOKEN: snykCodeToken,
-      },
-      workspaceStub,
-    );
-    await configuration.setToken(token);
-
-    strictEqual(await configuration.snykCodeToken, snykCodeToken);
-    secretStorageStoreStub.calledWith('snyk.token', token);
-    strictEqual(secretStorageGetStub.called, false);
-  });
-
-  test('Snyk OSS: API endpoint returns default endpoint when no custom set', () => {
+  test('API endpoint: returns default endpoint when no custom set', () => {
     const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, undefined);
 
     const configuration = new Configuration({}, workspace);
 
-    strictEqual(configuration.snykOssApiEndpoint, 'https://snyk.io/api/v1');
+    strictEqual(configuration.snykApiEndpoint, 'https://api.snyk.io');
   });
 
-  test('Snyk OSS: API endpoint returns custom endpoint when set', () => {
-    const customEndpoint = 'http://custom.endpoint.com/api';
+  test('API endpoint: returns custom endpoint when set', () => {
+    const customEndpoint = 'http://custom.endpoint.com';
     const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_ENDPOINT, customEndpoint);
 
     const configuration = new Configuration({}, workspace);
 
-    strictEqual(configuration.snykOssApiEndpoint, customEndpoint);
+    strictEqual(configuration.snykApiEndpoint, customEndpoint);
   });
 
   test('Preview features: not enabled', () => {
@@ -186,12 +95,14 @@ suite('Configuration', () => {
 
     deepStrictEqual(configuration.getPreviewFeatures(), {
       advisor: false,
+      ossQuickfixes: false,
     } as PreviewFeatures);
   });
 
   test('Preview features: some features enabled', () => {
     const previewFeatures = {
       advisor: false,
+      ossQuickfixes: false,
     } as PreviewFeatures;
     const workspace = stubWorkspaceConfiguration(FEATURES_PREVIEW_SETTING, previewFeatures);
 
@@ -227,6 +138,64 @@ suite('Configuration', () => {
       const configuration = new Configuration({}, workspace);
 
       strictEqual(configuration.isFedramp, false);
+    });
+
+    test('CLI Path: Returns default path if empty', async () => {
+      const workspace = stubWorkspaceConfiguration(ADVANCED_CLI_PATH, '');
+
+      const configuration = new Configuration({}, workspace);
+      sinon.stub(Platform, 'getCurrent').returns('linux');
+      sinon.stub(Platform, 'getArch').returns('x64');
+
+      const cliPath = await configuration.getCliPath();
+
+      const expectedCliPath = path.join(Platform.getHomeDir(), '.local/share/snyk/vscode-cli', 'snyk-linux');
+      strictEqual(cliPath, expectedCliPath);
+    });
+
+    test('CLI Path: Returns Snyk LS path', async () => {
+      const workspace = stubWorkspaceConfiguration(ADVANCED_CUSTOM_LS_PATH, '/path/to/ls');
+
+      const configuration = new Configuration({}, workspace);
+
+      const cliPath = await configuration.getCliPath();
+      strictEqual(cliPath, '/path/to/ls');
+    });
+
+    test('CLI Path: Returns CLI Path if set', async () => {
+      const workspace = stubWorkspaceConfiguration(ADVANCED_CLI_PATH, '/path/to/cli');
+
+      const configuration = new Configuration({}, workspace);
+
+      const cliPath = await configuration.getCliPath();
+      strictEqual(cliPath, '/path/to/cli');
+    });
+
+    test('CLI Release Channel: Return preview if extension is preview and release channel is default', async () => {
+      const workspace = stubWorkspaceConfiguration(ADVANCED_CLI_RELEASE_CHANNEL, 'stable');
+
+      const configuration = new Configuration({}, workspace);
+      configuration.setExtensionId('snyk-vulnerability-scanner-preview');
+      const cliReleaseChannel = await configuration.getCliReleaseChannel();
+      strictEqual(cliReleaseChannel, 'preview');
+    });
+
+    test('CLI Release Channel: Return current release channel without change if extension is not preview', async () => {
+      const workspace = stubWorkspaceConfiguration(ADVANCED_CLI_RELEASE_CHANNEL, 'stable');
+
+      const configuration = new Configuration({}, workspace);
+      configuration.setExtensionId('snyk-vulnerability-scanner');
+      const cliReleaseChannel = await configuration.getCliReleaseChannel();
+      strictEqual(cliReleaseChannel, 'stable');
+    });
+
+    test('CLI Release Channel: Return current version if release channel not stable and extension is preview', async () => {
+      const workspace = stubWorkspaceConfiguration(ADVANCED_CLI_RELEASE_CHANNEL, 'v1.1294.0');
+
+      const configuration = new Configuration({}, workspace);
+      configuration.setExtensionId('snyk-vulnerability-scanner-preview');
+      const cliReleaseChannel = await configuration.getCliReleaseChannel();
+      strictEqual(cliReleaseChannel, 'v1.1294.0');
     });
   });
 });

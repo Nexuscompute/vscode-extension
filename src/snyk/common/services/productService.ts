@@ -1,17 +1,18 @@
-import { Subscription } from 'rxjs';
+import { Subject, Subscription } from 'rxjs';
 import { AnalysisStatusProvider } from '../analysis/statusProvider';
 import { IConfiguration } from '../configuration/configuration';
 import { IWorkspaceTrust } from '../configuration/trustedFolders';
 import { CodeActionsProvider } from '../editor/codeActionsProvider';
 import { ILanguageServer } from '../languageServer/languageServer';
-import { Issue, Scan, ScanStatus } from '../languageServer/types';
+import { Issue, Scan, ScanProduct, ScanStatus } from '../languageServer/types';
 import { ILog } from '../logger/interfaces';
-import { IViewManagerService } from '../services/viewManagerService';
+import { IViewManagerService } from './viewManagerService';
 import { IProductWebviewProvider } from '../views/webviewProvider';
 import { ExtensionContext } from '../vscode/extensionContext';
 import { IVSCodeLanguages } from '../vscode/languages';
 import { Disposable } from '../vscode/types';
 import { IVSCodeWorkspace } from '../vscode/workspace';
+import { IDiagnosticsIssueProvider } from './diagnosticsService';
 
 export type WorkspaceFolderResult<T> = Issue<T>[] | Error;
 export type ProductResult<T> = Map<string, WorkspaceFolderResult<T>>; // map of a workspace folder to results array or an error occurred in this folder
@@ -29,7 +30,10 @@ export interface IProductService<T> extends AnalysisStatusProvider, Disposable {
 }
 
 export abstract class ProductService<T> extends AnalysisStatusProvider implements IProductService<T> {
+  abstract readonly productType: ScanProduct;
+
   private _result: ProductResult<T>;
+  readonly newResultAvailable$ = new Subject<void>();
 
   // Track running scan count. Assumption: server sends N success/error messages for N scans in progress.
   private runningScanCount = 0;
@@ -47,6 +51,7 @@ export abstract class ProductService<T> extends AnalysisStatusProvider implement
     private readonly workspaceTrust: IWorkspaceTrust,
     readonly languageServer: ILanguageServer,
     readonly languages: IVSCodeLanguages,
+    readonly diagnosticsIssueProvider: IDiagnosticsIssueProvider<T>,
     private readonly logger: ILog,
   ) {
     super();
@@ -57,6 +62,10 @@ export abstract class ProductService<T> extends AnalysisStatusProvider implement
   abstract subscribeToLsScanMessages(): Subscription;
 
   abstract refreshTreeView(): void;
+
+  public getSnykProductType(): ScanProduct {
+    return this.productType;
+  }
 
   registerCodeActionsProvider(provider: CodeActionsProvider<T>) {
     this.languages.registerCodeActionsProvider({ scheme: 'file', language: '*' }, provider);
@@ -159,15 +168,17 @@ export abstract class ProductService<T> extends AnalysisStatusProvider implement
     this.runningScanCount--;
 
     if (scanMsg.status == ScanStatus.Success) {
-      this._result.set(scanMsg.folderPath, scanMsg.issues);
+      const issues = this.diagnosticsIssueProvider.getIssuesFromDiagnostics(scanMsg.product);
+      this._result.set(scanMsg.folderPath, issues);
     } else {
-      this._result.set(scanMsg.folderPath, new Error('Failed to analyze.'));
+      this._result.set(scanMsg.folderPath, new Error(scanMsg.errorMessage));
     }
 
     if (this.runningScanCount <= 0) {
       this.analysisFinished();
       this.runningScanCount = 0;
 
+      this.newResultAvailable$.next();
       this.refreshTreeView();
     }
   }

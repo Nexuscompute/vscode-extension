@@ -1,6 +1,5 @@
 import { strictEqual } from 'assert';
 import sinon from 'sinon';
-import { IAnalytics } from '../../../snyk/common/analytics/itly';
 import { IConfiguration } from '../../../snyk/common/configuration/configuration';
 import { WorkspaceTrust } from '../../../snyk/common/configuration/trustedFolders';
 import { ILanguageServer } from '../../../snyk/common/languageServer/languageServer';
@@ -15,6 +14,7 @@ import { IacService } from '../../../snyk/snykIac/iacService';
 import { IacSuggestionWebviewProvider } from '../../../snyk/snykIac/views/suggestion/iacSuggestionWebviewProvider';
 import { LanguageServerMock } from '../mocks/languageServer.mock';
 import { LoggerMock } from '../mocks/logger.mock';
+import { IDiagnosticsIssueProvider } from '../../../snyk/common/services/diagnosticsService';
 
 suite('IaC Service', () => {
   let ls: ILanguageServer;
@@ -46,8 +46,8 @@ suite('IaC Service', () => {
       {
         registerCodeActionsProvider: sinon.fake(),
       } as unknown as IVSCodeLanguages,
+      {} as IDiagnosticsIssueProvider<IacIssueData>,
       new LoggerMock(),
-      {} as IAnalytics,
     );
   });
 
@@ -61,6 +61,7 @@ suite('IaC Service', () => {
       folderPath: 'test/path',
       issues: [],
       status: ScanStatus.InProgress,
+      errorMessage: '',
     });
 
     strictEqual(service.isAnalysisRunning, false);
