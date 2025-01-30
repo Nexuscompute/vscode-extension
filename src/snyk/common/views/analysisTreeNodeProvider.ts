@@ -2,10 +2,13 @@ import _ from 'lodash';
 import * as path from 'path';
 import { AnalysisStatusProvider } from '../analysis/statusProvider';
 import { IConfiguration } from '../configuration/configuration';
-import { SNYK_SHOW_LS_OUTPUT_COMMAND } from '../constants/commands';
+import { SNYK_SHOW_LS_OUTPUT_COMMAND, VSCODE_GO_TO_SETTINGS_COMMAND } from '../constants/commands';
 import { messages } from '../messages/analysisMessages';
 import { NODE_ICONS, TreeNode } from './treeNode';
 import { TreeNodeProvider } from './treeNodeProvider';
+import { SNYK_NAME_EXTENSION, SNYK_PUBLISHER } from '../constants/general';
+import { configuration } from '../configuration/instance';
+import { FEATURE_FLAGS } from '../constants/featureFlags';
 
 export abstract class AnalysisTreeNodeProvider extends TreeNodeProvider {
   constructor(protected readonly configuration: IConfiguration, private statusProvider: AnalysisStatusProvider) {
@@ -36,16 +39,6 @@ export abstract class AnalysisTreeNodeProvider extends TreeNodeProvider {
     return 0;
   };
 
-  protected getDurationTreeNode(): TreeNode {
-    const ts = new Date(this.statusProvider.lastAnalysisTimestamp);
-    const time = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const day = ts.toLocaleDateString([], { year: '2-digit', month: '2-digit', day: '2-digit' });
-
-    return new TreeNode({
-      text: messages.duration(time, day),
-    });
-  }
-
   protected getNoSeverityFiltersSelectedTreeNode(): TreeNode | null {
     const anyFilterEnabled = Object.values<boolean>(this.configuration.severityFilter).find(enabled => !!enabled);
     if (anyFilterEnabled) {
@@ -55,6 +48,51 @@ export abstract class AnalysisTreeNodeProvider extends TreeNodeProvider {
     return new TreeNode({
       text: messages.allSeverityFiltersDisabled,
     });
+  }
+
+  protected getNoIssueViewOptionsSelectedTreeNode(numIssues: number, ignoredIssueCount: number): TreeNode | null {
+    const isIgnoresEnabled = configuration.getFeatureFlag(FEATURE_FLAGS.consistentIgnores);
+    if (!isIgnoresEnabled) {
+      return null;
+    }
+
+    const anyOptionEnabled = Object.values<boolean>(this.configuration.issueViewOptions).find(enabled => !!enabled);
+    if (!anyOptionEnabled) {
+      return new TreeNode({
+        text: messages.allIssueViewOptionsDisabled,
+      });
+    }
+
+    if (numIssues === 0) {
+      return null;
+    }
+
+    // if only ignored issues are enabled, then let the customer know to adjust their settings
+    if (numIssues === ignoredIssueCount && !this.configuration.issueViewOptions.ignoredIssues) {
+      return new TreeNode({
+        text: messages.ignoredIssueViewOptionDisabled,
+        command: {
+          command: VSCODE_GO_TO_SETTINGS_COMMAND,
+          title: '',
+          arguments: [`@ext:${SNYK_PUBLISHER}.${SNYK_NAME_EXTENSION}`],
+        },
+      });
+    }
+
+    // if only open issues are enabled, then let the customer know to adjust their settings
+    if (ignoredIssueCount === 0 && !this.configuration.issueViewOptions.openIssues) {
+      return new TreeNode({
+        text: messages.openIssueViewOptionDisabled,
+        command: {
+          command: VSCODE_GO_TO_SETTINGS_COMMAND,
+          title: '',
+          arguments: [`@ext:${SNYK_PUBLISHER}.${SNYK_NAME_EXTENSION}`],
+        },
+      });
+    }
+
+    // if all options are enabled we don't want to show a warning
+    return null;
   }
 
   protected getErrorEncounteredTreeNode(scanPath?: string): TreeNode {
@@ -72,6 +110,21 @@ export abstract class AnalysisTreeNodeProvider extends TreeNodeProvider {
     });
   }
 
+  protected getFaultyRepositoryErrorTreeNode(scanPath?: string, errorMessage?: string): TreeNode {
+    return new TreeNode({
+      icon: NODE_ICONS.error,
+      text: scanPath ? path.basename(scanPath) : messages.scanFailed,
+      description: errorMessage,
+      internal: {
+        isError: true,
+      },
+      command: {
+        command: SNYK_SHOW_LS_OUTPUT_COMMAND,
+        title: 'errorMessage',
+      },
+    });
+  }
+
   protected getNoWorkspaceTrustTreeNode(): TreeNode {
     return new TreeNode({
       text: messages.noWorkspaceTrust,
@@ -81,6 +134,4 @@ export abstract class AnalysisTreeNodeProvider extends TreeNodeProvider {
       },
     });
   }
-
-  protected abstract getFilteredIssues(issues: readonly unknown[]): readonly unknown[];
 }

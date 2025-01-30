@@ -13,7 +13,7 @@ export interface ICodeSettings {
   getSastSettings(): Promise<SastSettings | undefined>;
 }
 
-export type SastSettings = {
+type SastSettings = {
   sastEnabled: boolean;
   localCodeEngine: {
     enabled: boolean;
@@ -43,6 +43,7 @@ export class CodeSettings implements ICodeSettings {
     }
     await this.contextService.setContext(SNYK_CONTEXT.CODE_ENABLED, codeEnabled);
     await this.contextService.setContext(SNYK_CONTEXT.CODE_LOCAL_ENGINE_ENABLED, localCodeEngineEnabled);
+
     return codeEnabled;
   }
 

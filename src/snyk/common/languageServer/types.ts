@@ -4,11 +4,21 @@ export enum ScanProduct {
   InfrastructureAsCode = 'iac',
 }
 
-export type InProgress = 'inProgress';
+export enum LsScanProduct {
+  Code = 'Snyk Code',
+  OpenSource = 'Snyk Open Source',
+  InfrastructureAsCode = 'Snyk IaC',
+  Unknown = '',
+}
+
 export enum ScanStatus {
   InProgress = 'inProgress',
   Success = 'success',
   Error = 'error',
+}
+
+export enum LsErrorMessage {
+  repositoryInvalidError = 'repository does not exist',
 }
 
 export type Scan<T> = {
@@ -16,6 +26,7 @@ export type Scan<T> = {
   product: ScanProduct;
   status: ScanStatus;
   issues: Issue<T>[];
+  errorMessage: string;
 };
 
 export type Issue<T> = {
@@ -24,6 +35,7 @@ export type Issue<T> = {
   severity: IssueSeverity;
   filePath: string;
   additionalData: T;
+  isIgnored: boolean;
 };
 
 export enum IssueSeverity {
@@ -43,11 +55,13 @@ export type CodeIssueData = {
   exampleCommitFixes: ExampleCommitFix[];
   cwe: string[];
   text: string;
-
   markers?: Marker[];
   cols: Point;
   rows: Point;
   isSecurityType: boolean;
+  priorityScore: number;
+  hasAIFix: boolean;
+  details: string; // HTML from the LSP
 };
 
 export type ExampleCommitFix = {
@@ -58,6 +72,7 @@ type CommitChangeLine = {
   line: string;
   lineNumber: number;
   lineChange: 'removed' | 'added' | 'none';
+  isExampleLineEncoded?: boolean;
 };
 export type Marker = {
   msg: Point;
@@ -95,8 +110,10 @@ export type OssIssueData = {
 
   projectName: string;
   displayTargetFile: string;
+
+  details: string;
 };
-export type Identifiers = {
+type Identifiers = {
   CWE: string[];
   CVE: string[];
 };
@@ -111,4 +128,21 @@ export type IacIssueData = {
   path?: string[];
   resolve?: string;
   references?: string[];
+  customUIContent: string;
+};
+
+export type AutofixUnifiedDiffSuggestion = {
+  fixId: string;
+  unifiedDiffsPerFile: { [key: string]: string };
+};
+
+export type Summary = {
+  toggleDelta: boolean;
+};
+
+export type SummaryMessage = {
+  type: string;
+  args: {
+    summary: Summary;
+  };
 };

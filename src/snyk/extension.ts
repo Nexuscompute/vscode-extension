@@ -1,19 +1,16 @@
 import * as vscode from 'vscode';
-import AdvisorProvider from './advisor/services/advisorProvider';
-import { AdvisorService } from './advisor/services/advisorService';
 import { IExtension } from './base/modules/interfaces';
 import SnykLib from './base/modules/snykLib';
 import { AuthenticationService } from './base/services/authenticationService';
 import { ScanModeService } from './base/services/scanModeService';
 import { EmptyTreeDataProvider } from './base/views/emptyTreeDataProvider';
 import { SupportProvider } from './base/views/supportProvider';
-import { messages } from './cli/messages/messages';
-import { Iteratively } from './common/analytics/itly';
 import { CommandController } from './common/commands/commandController';
 import { OpenIssueCommandArg } from './common/commands/types';
 import { configuration } from './common/configuration/instance';
 import { SnykConfiguration } from './common/configuration/snykConfiguration';
 import {
+  SNYK_CLEAR_PERSISTED_CACHE_COMMAND,
   SNYK_DCIGNORE_COMMAND,
   SNYK_ENABLE_CODE_COMMAND,
   SNYK_IGNORE_ISSUE_COMMAND,
@@ -21,14 +18,16 @@ import {
   SNYK_OPEN_BROWSER_COMMAND,
   SNYK_OPEN_ISSUE_COMMAND,
   SNYK_OPEN_LOCAL_COMMAND,
+  SNYK_SET_BASE_BRANCH_COMMAND,
   SNYK_SET_TOKEN_COMMAND,
   SNYK_SETTINGS_COMMAND,
+  SNYK_SHOW_ERROR_FROM_CONTEXT_COMMAND,
   SNYK_SHOW_LS_OUTPUT_COMMAND,
   SNYK_SHOW_OUTPUT_COMMAND,
   SNYK_START_COMMAND,
+  SNYK_TOGGLE_DELTA,
   SNYK_WORKSPACE_SCAN_COMMAND,
 } from './common/constants/commands';
-import { MEMENTO_FIRST_INSTALL_DATE_KEY } from './common/constants/globalState';
 import {
   SNYK_CONTEXT,
   SNYK_VIEW_ANALYSIS_CODE_ENABLEMENT,
@@ -36,24 +35,22 @@ import {
   SNYK_VIEW_ANALYSIS_CODE_SECURITY,
   SNYK_VIEW_ANALYSIS_IAC,
   SNYK_VIEW_ANALYSIS_OSS,
+  SNYK_VIEW_SUMMARY,
   SNYK_VIEW_SUPPORT,
   SNYK_VIEW_WELCOME,
 } from './common/constants/views';
 import { ErrorHandler } from './common/error/errorHandler';
-import { ErrorReporter } from './common/error/errorReporter';
 import { ExperimentService } from './common/experiment/services/experimentService';
 import { LanguageServer } from './common/languageServer/languageServer';
-import { StaticLsApi } from './common/languageServer/staticLsApi';
+import { StaticCliApi } from './cli/staticCliApi';
 import { Logger } from './common/logger/logger';
 import { DownloadService } from './common/services/downloadService';
 import { LearnService } from './common/services/learnService';
 import { NotificationService } from './common/services/notificationService';
 import { User } from './common/user';
-import { CodeActionAdapter, CodeActionKindAdapter } from './common/vscode/codeAction';
+import { CodeActionAdapter } from './common/vscode/codeAction';
 import { vsCodeCommands } from './common/vscode/commands';
-import { vsCodeEnv } from './common/vscode/env';
 import { extensionContext } from './common/vscode/extensionContext';
-import { HoverAdapter } from './common/vscode/hover';
 import { LanguageClientAdapter } from './common/vscode/languageClient';
 import { vsCodeLanguages } from './common/vscode/languages';
 import SecretStorageAdapter from './common/vscode/secretStorage';
@@ -74,28 +71,78 @@ import { IacService } from './snykIac/iacService';
 import IacIssueTreeProvider from './snykIac/views/iacIssueTreeProvider';
 import { IacSuggestionWebviewProvider } from './snykIac/views/suggestion/iacSuggestionWebviewProvider';
 import { EditorDecorator } from './snykOss/editor/editorDecorator';
-import { OssService } from './snykOss/services/ossService';
+import { OssService } from './snykOss/ossService';
+import { OssDetailPanelProvider } from './snykOss/providers/ossDetailPanelProvider';
+import { OssVulnerabilityCountProvider } from './snykOss/providers/ossVulnerabilityCountProvider';
+import OssIssueTreeProvider from './snykOss/providers/ossVulnerabilityTreeProvider';
 import { OssVulnerabilityCountService } from './snykOss/services/vulnerabilityCount/ossVulnerabilityCountService';
-import { ModuleVulnerabilityCountProvider } from './snykOss/services/vulnerabilityCount/vulnerabilityCountProvider';
-import { OssVulnerabilityTreeProvider } from './snykOss/views/ossVulnerabilityTreeProvider';
-import { OssSuggestionWebviewProvider } from './snykOss/views/suggestion/ossSuggestionWebviewProvider';
-import { DailyScanJob } from './snykOss/watchers/dailyScanJob';
+import { FeatureFlagService } from './common/services/featureFlagService';
+import { DiagnosticsIssueProvider } from './common/services/diagnosticsService';
+import { CodeIssueData, IacIssueData, OssIssueData } from './common/languageServer/types';
+import { ClearCacheService } from './common/services/CacheService';
+import { InMemory, Persisted } from './common/constants/general';
+import { GitAPI, GitExtension, Repository } from './common/git';
+import { AnalyticsSender } from './common/analytics/AnalyticsSender';
+import { MEMENTO_ANALYTICS_PLUGIN_INSTALLED_SENT } from './common/constants/globalState';
+import { AnalyticsEvent } from './common/analytics/AnalyticsEvent';
+import { SummaryWebviewViewProvider } from './common/views/summaryWebviewProvider';
+import { SummaryProviderService } from './base/summary/summaryProviderService';
 
 class SnykExtension extends SnykLib implements IExtension {
   public async activate(vscodeContext: vscode.ExtensionContext): Promise<void> {
+    const summaryWebviewViewProvider = SummaryWebviewViewProvider.getInstance(vscodeContext);
+    if (!summaryWebviewViewProvider) {
+      console.log('Summary panel not initialized.');
+    } else {
+      this.summaryProviderService = new SummaryProviderService(Logger, summaryWebviewViewProvider);
+      vscodeContext.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(SNYK_VIEW_SUMMARY, summaryWebviewViewProvider),
+      );
+    }
+
+    SummaryWebviewViewProvider.getInstance(vscodeContext);
     extensionContext.setContext(vscodeContext);
     this.context = extensionContext;
-
     const snykConfiguration = await this.getSnykConfiguration();
-    if (snykConfiguration) {
-      await ErrorReporter.init(configuration, snykConfiguration, extensionContext.extensionPath, vsCodeEnv, Logger);
-    }
 
     try {
       await this.initializeExtension(vscodeContext, snykConfiguration);
+      this.configureGitHandlers();
     } catch (e) {
       ErrorHandler.handle(e, Logger);
     }
+  }
+
+  private configureGitHandlers(): void {
+    // Get the Git extension
+    const gitExtension = vscode.extensions.getExtension<GitExtension>('vscode.git')?.exports;
+
+    if (!gitExtension) {
+      return;
+    }
+
+    // Get the API from the Git extension
+    const git: GitAPI = gitExtension.getAPI(1);
+
+    // Check if there are any repositories
+    const repositories: Repository[] = git?.repositories;
+    if (!repositories || repositories.length === 0) {
+      return;
+    }
+    const previousBranches = new Map<Repository, string | undefined>();
+    // Register event listener for changes in each repository
+    repositories.forEach((repo: Repository) => {
+      const previousBranch = repo.state.HEAD?.name;
+      previousBranches.set(repo, previousBranch);
+      repo.state.onDidChange(async () => {
+        const currentBranch = repo.state.HEAD?.name;
+        const storedPreviousBranch = previousBranches.get(repo);
+        if (currentBranch !== storedPreviousBranch) {
+          await this.cacheService.clearCache(repo.rootUri.toString(), InMemory);
+          previousBranches.set(repo, currentBranch);
+        }
+      });
+    });
   }
 
   private async getSnykConfiguration(): Promise<SnykConfiguration | undefined> {
@@ -122,25 +169,10 @@ class SnykExtension extends SnykLib implements IExtension {
 
     this.user = await User.getAnonymous(this.context, Logger);
 
-    this.analytics = new Iteratively(
-      this.user,
-      Logger,
-      configuration.shouldReportEvents,
-      configuration.isFedramp,
-      configuration.isDevelopment,
-      snykConfiguration,
-    );
-
     SecretStorageAdapter.init(vscodeContext);
-
-    this.configurationWatcher = new ConfigurationWatcher(this.analytics, Logger);
-    this.notificationService = new NotificationService(
-      vsCodeWindow,
-      vsCodeCommands,
-      configuration,
-      this.analytics,
-      Logger,
-    );
+    configuration.setExtensionId(vscodeContext.extension.id);
+    this.configurationWatcher = new ConfigurationWatcher(Logger);
+    this.notificationService = new NotificationService(vsCodeWindow, vsCodeCommands, configuration, Logger);
 
     this.statusBarItem.show();
 
@@ -150,23 +182,22 @@ class SnykExtension extends SnykLib implements IExtension {
       this,
       configuration,
       vsCodeWindow,
-      this.analytics,
       Logger,
       languageClientAdapter,
       vsCodeCommands,
     );
 
     this.learnService = new LearnService(vsCodeCommands);
+    this.cacheService = new ClearCacheService(vsCodeCommands);
 
     this.codeSettings = new CodeSettings(this.contextService, configuration, this.openerService, vsCodeCommands);
 
-    this.scanModeService = new ScanModeService(this.contextService, configuration, this.analytics);
+    this.scanModeService = new ScanModeService(this.contextService, configuration);
 
-    this.advisorService = new AdvisorProvider(this.advisorApiClient, Logger);
     this.downloadService = new DownloadService(
       this.context,
       configuration,
-      new StaticLsApi(vsCodeWorkspace, configuration, Logger),
+      new StaticCliApi(vsCodeWorkspace, configuration, Logger),
       vsCodeWindow,
       Logger,
     );
@@ -182,6 +213,8 @@ class SnykExtension extends SnykLib implements IExtension {
       this.authService,
       Logger,
       this.downloadService,
+      this.context,
+      this.summaryProviderService,
     );
 
     const codeSuggestionProvider = new CodeSuggestionWebviewProvider(
@@ -191,6 +224,7 @@ class SnykExtension extends SnykLib implements IExtension {
       vsCodeLanguages,
       vsCodeWorkspace,
       this.learnService,
+      vsCodeCommands,
     );
 
     this.snykCode = new SnykCodeService(
@@ -204,23 +238,32 @@ class SnykExtension extends SnykLib implements IExtension {
       this.workspaceTrust,
       this.languageServer,
       vsCodeLanguages,
+      new DiagnosticsIssueProvider<CodeIssueData>(),
       Logger,
-      this.analytics,
+    );
+
+    const ossSuggestionProvider = new OssDetailPanelProvider(
+      vsCodeWindow,
+      extensionContext,
+      Logger,
+      vsCodeLanguages,
+      vsCodeWorkspace,
+      vsCodeCommands,
     );
 
     this.ossService = new OssService(
-      this.context,
-      Logger,
+      extensionContext,
       configuration,
-      new OssSuggestionWebviewProvider(this.context, vsCodeWindow, Logger, this.learnService),
-      vsCodeWorkspace,
+      ossSuggestionProvider,
+      new CodeActionAdapter(),
+      this.codeActionKindAdapter,
       this.viewManagerService,
-      this.downloadService,
-      new DailyScanJob(this),
-      this.notificationService,
-      this.analytics,
-      this.languageServer,
+      vsCodeWorkspace,
       this.workspaceTrust,
+      this.languageServer,
+      vsCodeLanguages,
+      new DiagnosticsIssueProvider<OssIssueData>(),
+      Logger,
     );
 
     const iacSuggestionProvider = new IacSuggestionWebviewProvider(
@@ -229,6 +272,7 @@ class SnykExtension extends SnykLib implements IExtension {
       Logger,
       vsCodeLanguages,
       vsCodeWorkspace,
+      vsCodeCommands,
     );
 
     this.iacService = new IacService(
@@ -242,8 +286,8 @@ class SnykExtension extends SnykLib implements IExtension {
       this.workspaceTrust,
       this.languageServer,
       vsCodeLanguages,
+      new DiagnosticsIssueProvider<IacIssueData>(),
       Logger,
-      this.analytics,
     );
 
     this.commandController = new CommandController(
@@ -258,50 +302,48 @@ class SnykExtension extends SnykLib implements IExtension {
       vsCodeWindow,
       this.languageServer,
       Logger,
-      this.analytics,
+      configuration,
+      this.folderConfigs,
     );
     this.registerCommands(vscodeContext);
 
     const codeSecurityIssueProvider = new CodeSecurityIssueTreeProvider(
-        this.viewManagerService,
-        this.contextService,
-        this.snykCode,
-        configuration,
-        vsCodeLanguages,
-      ),
-      codeQualityIssueProvider = new CodeQualityIssueTreeProvider(
-        this.viewManagerService,
-        this.contextService,
-        this.snykCode,
-        configuration,
-        vsCodeLanguages,
-      );
+      this.viewManagerService,
+      this.contextService,
+      this.snykCode,
+      configuration,
+      vsCodeLanguages,
+      this.folderConfigs,
+    );
 
-    const codeSecurityTree = vscode.window.createTreeView(SNYK_VIEW_ANALYSIS_CODE_SECURITY, {
+    const codeQualityIssueProvider = new CodeQualityIssueTreeProvider(
+      this.viewManagerService,
+      this.contextService,
+      this.snykCode,
+      configuration,
+      vsCodeLanguages,
+      this.folderConfigs,
+    );
+
+    const securityCodeView = SNYK_VIEW_ANALYSIS_CODE_SECURITY;
+    const codeQualityView = SNYK_VIEW_ANALYSIS_CODE_QUALITY;
+
+    const codeSecurityTree = vscode.window.createTreeView(securityCodeView, {
       treeDataProvider: codeSecurityIssueProvider,
     });
-    const codeQualityTree = vscode.window.createTreeView(SNYK_VIEW_ANALYSIS_CODE_QUALITY, {
+
+    const codeQualityTree = vscode.window.createTreeView(codeQualityView, {
       treeDataProvider: codeQualityIssueProvider,
     });
 
     vscodeContext.subscriptions.push(
-      vscode.window.registerTreeDataProvider(SNYK_VIEW_ANALYSIS_CODE_SECURITY, codeSecurityIssueProvider),
-      vscode.window.registerTreeDataProvider(SNYK_VIEW_ANALYSIS_CODE_QUALITY, codeQualityIssueProvider),
+      vscode.window.registerTreeDataProvider(securityCodeView, codeSecurityIssueProvider),
+      vscode.window.registerTreeDataProvider(codeQualityView, codeQualityIssueProvider),
       codeSecurityTree,
       codeQualityTree,
     );
 
-    const ossVulnerabilityProvider = new OssVulnerabilityTreeProvider(
-      this.viewManagerService,
-      this.contextService,
-      this.ossService,
-      configuration,
-    );
-
-    vscodeContext.subscriptions.push(
-      vscode.window.registerTreeDataProvider(SNYK_VIEW_ANALYSIS_OSS, ossVulnerabilityProvider),
-      vscode.window.registerTreeDataProvider(SNYK_VIEW_SUPPORT, new SupportProvider()),
-    );
+    vscodeContext.subscriptions.push(vscode.window.registerTreeDataProvider(SNYK_VIEW_SUPPORT, new SupportProvider()));
 
     const welcomeTree = vscode.window.createTreeView(SNYK_VIEW_WELCOME, {
       treeDataProvider: new EmptyTreeDataProvider(),
@@ -310,14 +352,24 @@ class SnykExtension extends SnykLib implements IExtension {
       treeDataProvider: new EmptyTreeDataProvider(),
     });
 
-    const ossTree = vscode.window.createTreeView(SNYK_VIEW_ANALYSIS_OSS, {
-      treeDataProvider: ossVulnerabilityProvider,
+    vscodeContext.subscriptions.push(codeEnablementTree);
+
+    const ossIssueProvider = new OssIssueTreeProvider(
+      this.viewManagerService,
+      this.contextService,
+      this.ossService,
+      configuration,
+      vsCodeLanguages,
+      this.folderConfigs,
+    );
+
+    const ossSecurityTree = vscode.window.createTreeView(SNYK_VIEW_ANALYSIS_OSS, {
+      treeDataProvider: ossIssueProvider,
     });
 
     vscodeContext.subscriptions.push(
-      ossTree.onDidChangeVisibility(e => this.onDidChangeOssTreeVisibility(e.visible)),
-      welcomeTree.onDidChangeVisibility(e => this.onDidChangeWelcomeViewVisibility(e.visible)),
-      codeEnablementTree,
+      vscode.window.registerTreeDataProvider(SNYK_VIEW_ANALYSIS_OSS, ossIssueProvider),
+      ossSecurityTree,
     );
 
     const iacIssueProvider = new IacIssueTreeProvider(
@@ -326,6 +378,7 @@ class SnykExtension extends SnykLib implements IExtension {
       this.iacService,
       configuration,
       vsCodeLanguages,
+      this.folderConfigs,
     );
 
     const iacSecurityTree = vscode.window.createTreeView(SNYK_VIEW_ANALYSIS_IAC, {
@@ -344,27 +397,23 @@ class SnykExtension extends SnykLib implements IExtension {
     vscode.workspace.onDidChangeWorkspaceFolders(e => {
       this.workspaceTrust.resetTrustedFoldersCache();
       e.removed.forEach(folder => {
-        this.snykCode.resetResult(folder.uri.path);
+        this.snykCode.resetResult(folder.uri.fsPath);
       });
-      this.runScan(false);
+      this.runScan();
     });
 
     this.editorsWatcher.activate(this);
     this.configurationWatcher.activate(this);
     this.snykCode.activateWebviewProviders();
-    this.ossService.activateSuggestionProvider();
-    this.ossService.activateManifestFileWatcher(this);
     this.iacService.activateWebviewProviders();
+    this.ossService.activateWebviewProviders();
 
     // noinspection ES6MissingAwait
     void this.notificationService.init();
+    // eslint-disable-next-line  @typescript-eslint/no-unsafe-argument
+    this.checkAdvancedMode().catch(err => Logger.error(err));
 
-    this.checkAdvancedMode().catch(err => ErrorReporter.capture(err));
-
-    this.analytics.load();
     this.experimentService.load();
-
-    this.logPluginIsInstalled();
 
     this.initDependencyDownload();
 
@@ -372,7 +421,7 @@ class SnykExtension extends SnykLib implements IExtension {
       vsCodeWorkspace,
       vsCodeWindow,
       vsCodeLanguages,
-      new ModuleVulnerabilityCountProvider(
+      new OssVulnerabilityCountProvider(
         this.ossService,
         languageClientAdapter,
         new UriAdapter(),
@@ -381,27 +430,9 @@ class SnykExtension extends SnykLib implements IExtension {
       this.ossService,
       Logger,
       new EditorDecorator(vsCodeWindow, vsCodeLanguages, new ThemeColorAdapter()),
-      new CodeActionKindAdapter(),
-      this.analytics,
       configuration,
     );
     this.ossVulnerabilityCountService.activate();
-
-    this.advisorScoreDisposable = new AdvisorService(
-      vsCodeWindow,
-      vsCodeLanguages,
-      this.advisorService,
-      Logger,
-      vsCodeWorkspace,
-      this.advisorApiClient,
-      new ThemeColorAdapter(),
-      new HoverAdapter(),
-      this.markdownStringAdapter,
-      configuration,
-    );
-
-    // noinspection ES6MissingAwait
-    void this.advisorScoreDisposable.activate();
 
     // Wait for LS startup to finish before updating the codeEnabled context
     // The codeEnabled context depends on an LS command
@@ -410,15 +441,45 @@ class SnykExtension extends SnykLib implements IExtension {
     // initialize contexts
     await this.contextService.setContext(SNYK_CONTEXT.INITIALIZED, true);
 
+    // Fetch feature flag to determine whether to use the new LSP-based rendering.
+    // feature flags depend on the language server
+    this.featureFlagService = new FeatureFlagService(vsCodeCommands);
+    await this.setupFeatureFlags();
+
+    // Fetch feature flag to determine whether to use the new LSP-based rendering.
+
+    // initialize contexts
+    await this.contextService.setContext(SNYK_CONTEXT.INITIALIZED, true);
+    this.sendPluginInstalledEvent();
+
     // Actually start analysis
     this.runScan();
+  }
+
+  private sendPluginInstalledEvent() {
+    // start analytics sender and send plugin installed event
+    const analyticsSender = AnalyticsSender.getInstance(Logger, configuration, vsCodeCommands, this.contextService);
+
+    const pluginInstalledSent =
+      extensionContext.getGlobalStateValue<boolean>(MEMENTO_ANALYTICS_PLUGIN_INSTALLED_SENT) ?? false;
+
+    if (!pluginInstalledSent) {
+      const category = [];
+      category.push('install');
+      const pluginInstalleEvent = new AnalyticsEvent(this.user.anonymousId, 'plugin installed', category);
+      analyticsSender.logEvent(pluginInstalleEvent, () => {
+        void extensionContext.updateGlobalStateValue(MEMENTO_ANALYTICS_PLUGIN_INSTALLED_SENT, true);
+      });
+    }
   }
 
   public async deactivate(): Promise<void> {
     this.ossVulnerabilityCountService.dispose();
     await this.languageServer.stop();
-    await this.analytics.flush();
-    await ErrorReporter.flush();
+  }
+
+  public async stopLanguageServer(): Promise<void> {
+    await this.languageServer.stop();
   }
 
   public async restartLanguageServer(): Promise<void> {
@@ -426,21 +487,11 @@ class SnykExtension extends SnykLib implements IExtension {
     await this.languageServer.start();
   }
 
-  private logPluginIsInstalled(): void {
-    // Use memento until lifecycle hooks are implemented
-    // https://github.com/microsoft/vscode/issues/98732
-    if (!this.context.getGlobalStateValue(MEMENTO_FIRST_INSTALL_DATE_KEY)) {
-      this.analytics.logPluginIsInstalled();
-      void this.context.updateGlobalStateValue(MEMENTO_FIRST_INSTALL_DATE_KEY, Date.now());
-    }
-  }
-
-  private initDependencyDownload(): DownloadService {
+  public initDependencyDownload(): DownloadService {
     this.downloadService.downloadOrUpdate().catch(err => {
-      Logger.error(`${messages.lsDownloadFailed} ${ErrorHandler.stringifyError(err)}`);
-      this.ossService?.handleLsDownloadFailure();
+      void ErrorHandler.handleGlobal(err, Logger, this.contextService, this.loadingBadge);
+      void this.notificationService.showErrorNotification((err as Error).message);
     });
-
     return this.downloadService;
   }
 
@@ -454,13 +505,16 @@ class SnykExtension extends SnykLib implements IExtension {
       ),
       vscode.commands.registerCommand(SNYK_INITIATE_LOGIN_COMMAND, () => this.commandController.initiateLogin()),
       vscode.commands.registerCommand(SNYK_SET_TOKEN_COMMAND, () => this.commandController.setToken()),
+      vscode.commands.registerCommand(
+        SNYK_CLEAR_PERSISTED_CACHE_COMMAND,
+        async () => await this.cacheService.clearCache('', Persisted),
+      ),
       vscode.commands.registerCommand(SNYK_ENABLE_CODE_COMMAND, () =>
         this.commandController.executeCommand(SNYK_ENABLE_CODE_COMMAND, () => this.enableCode()),
       ),
       vscode.commands.registerCommand(SNYK_START_COMMAND, async () => {
         await vscode.commands.executeCommand(SNYK_WORKSPACE_SCAN_COMMAND);
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-        await this.commandController.executeCommand(SNYK_START_COMMAND, () => this.runScan(true)); // todo: remove once OSS scans replaced with LS
+        await vscode.commands.executeCommand('setContext', 'scanSummaryHtml', 'scanSummary');
       }),
       vscode.commands.registerCommand(SNYK_SETTINGS_COMMAND, () => this.commandController.openSettings()),
       vscode.commands.registerCommand(SNYK_DCIGNORE_COMMAND, (custom: boolean, path?: string) =>
@@ -472,6 +526,16 @@ class SnykExtension extends SnykLib implements IExtension {
       vscode.commands.registerCommand(SNYK_SHOW_OUTPUT_COMMAND, () => this.commandController.showOutputChannel()),
       vscode.commands.registerCommand(SNYK_SHOW_LS_OUTPUT_COMMAND, () => this.commandController.showLsOutputChannel()),
       vscode.commands.registerCommand(SNYK_IGNORE_ISSUE_COMMAND, IgnoreCommand.ignoreIssues),
+      vscode.commands.registerCommand(SNYK_SET_BASE_BRANCH_COMMAND, (folderPath: string) =>
+        this.commandController.setBaseBranch(folderPath),
+      ),
+      vscode.commands.registerCommand(SNYK_TOGGLE_DELTA, (isEnabled: boolean) =>
+        this.commandController.toggleDelta(isEnabled),
+      ),
+      vscode.commands.registerCommand(SNYK_SHOW_ERROR_FROM_CONTEXT_COMMAND, () => {
+        const err = this.contextService.viewContext[SNYK_CONTEXT.ERROR] as Error;
+        void this.notificationService.showErrorNotification(err.message);
+      }),
     );
   }
 }

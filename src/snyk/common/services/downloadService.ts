@@ -1,46 +1,41 @@
 import { ReplaySubject } from 'rxjs';
+import * as fsPromises from 'fs/promises';
 import { Checksum } from '../../cli/checksum';
 import { messages } from '../../cli/messages/messages';
 import { IConfiguration } from '../configuration/configuration';
-import {
-  MEMENTO_LS_CHECKSUM,
-  MEMENTO_LS_LAST_UPDATE_DATE,
-  MEMENTO_LS_PROTOCOL_VERSION,
-} from '../constants/globalState';
-import { PROTOCOL_VERSION } from '../constants/languageServer';
+import { MEMENTO_CLI_CHECKSUM, MEMENTO_CLI_VERSION, MEMENTO_LS_PROTOCOL_VERSION } from '../constants/globalState';
 import { Downloader } from '../download/downloader';
-import { LsExecutable } from '../languageServer/lsExecutable';
-import { IStaticLsApi } from '../languageServer/staticLsApi';
-import { LsSupportedPlatform } from '../languageServer/supportedPlatforms';
+import { CliExecutable } from '../../cli/cliExecutable';
+import { IStaticCliApi } from '../../cli/staticCliApi';
 import { ILog } from '../logger/interfaces';
 import { ExtensionContext } from '../vscode/extensionContext';
 import { IVSCodeWindow } from '../vscode/window';
+import { CliSupportedPlatform } from '../../cli/supportedPlatforms';
+import { PROTOCOL_VERSION } from '../constants/languageServer';
 
 export class DownloadService {
-  readonly fourDaysInMs = 4 * 24 * 3600 * 1000;
   readonly downloadReady$ = new ReplaySubject<void>(1);
-
   private readonly downloader: Downloader;
 
   constructor(
     private readonly extensionContext: ExtensionContext,
     private readonly configuration: IConfiguration,
-    private readonly lsApi: IStaticLsApi,
+    private readonly cliApi: IStaticCliApi,
     readonly window: IVSCodeWindow,
     private readonly logger: ILog,
     downloader?: Downloader,
   ) {
-    this.downloader = downloader ?? new Downloader(configuration, lsApi, window, logger);
+    this.downloader = downloader ?? new Downloader(configuration, cliApi, window, logger, this.extensionContext);
   }
 
   async downloadOrUpdate(): Promise<boolean> {
-    const lsInstalled = await this.isLsInstalled();
+    const cliInstalled = await this.isCliInstalled();
     if (!this.configuration.isAutomaticDependencyManagementEnabled()) {
       this.downloadReady$.next();
       return false;
     }
 
-    if (!lsInstalled) {
+    if (!cliInstalled) {
       const downloaded = await this.download();
       this.downloadReady$.next();
       return downloaded;
@@ -59,20 +54,24 @@ export class DownloadService {
       return false;
     }
 
-    await this.setLastLsUpdateDateAndChecksum(executable.checksum);
-    await this.setCurrentLspVersion();
+    await this.setCliChecksum(executable.checksum);
+    await this.setCliVersion(executable.version);
     this.logger.info(messages.downloadFinished(executable.version));
     return true;
   }
 
   async update(): Promise<boolean> {
-    // let language server manage CLI downloads, but download LS here
-    const platform = LsExecutable.getCurrentWithArch();
-    const lsInstalled = await this.isLsInstalled();
-    const lspVersionHasUpdated = this.hasLspVersionUpdated();
-    const needsUpdate = this.isFourDaysPassedSinceLastLsUpdate() || lspVersionHasUpdated;
-    if (!lsInstalled || needsUpdate) {
-      const updateAvailable = await this.isLsUpdateAvailable(platform);
+    const platform = await CliExecutable.getCurrentWithArch();
+    const cliReleaseChannel = await this.configuration.getCliReleaseChannel();
+    const version = await this.cliApi.getLatestCliVersion(cliReleaseChannel);
+    if (!version) {
+      return false;
+    }
+    const cliInstalled = await this.isCliInstalled();
+    const cliVersionHasUpdated = this.hasCliVersionUpdated(version);
+    const needsUpdate = cliVersionHasUpdated || this.hasLspVersionUpdated();
+    if (!cliInstalled || needsUpdate) {
+      const updateAvailable = await this.isCliUpdateAvailable(platform);
       if (!updateAvailable) {
         return false;
       }
@@ -81,7 +80,8 @@ export class DownloadService {
         return false;
       }
 
-      await this.setLastLsUpdateDateAndChecksum(executable.checksum);
+      await this.setCliChecksum(executable.checksum);
+      await this.setCliVersion(executable.version);
       await this.setCurrentLspVersion();
       this.logger.info(messages.downloadFinished(executable.version));
       return true;
@@ -89,43 +89,52 @@ export class DownloadService {
     return false;
   }
 
-  async isLsInstalled() {
-    const lsExecutableExists = await LsExecutable.exists(this.configuration);
-    const lastUpdateDateWritten = !!this.getLastLsUpdateDate();
-    const lsChecksumWritten = !!this.getLsChecksum();
+  async isCliInstalled() {
+    const cliExecutableExists = await CliExecutable.exists(await this.configuration.getCliPath());
+    const cliChecksumWritten = !!this.getCliChecksum();
 
-    return lsExecutableExists && lastUpdateDateWritten && lsChecksumWritten;
+    return cliExecutableExists && cliChecksumWritten;
   }
 
-  private async isLsUpdateAvailable(platform: LsSupportedPlatform): Promise<boolean> {
-    const latestChecksum = await this.lsApi.getSha256Checksum(platform);
-    const path = LsExecutable.getPath(this.configuration.getSnykLanguageServerPath());
-
-    // Update is available if fetched checksum not matching the current one
-    const checksum = await Checksum.getChecksumOf(path, latestChecksum);
-    if (checksum.verify()) {
-      this.logger.info(messages.isLatest);
+  private async isCliUpdateAvailable(platform: CliSupportedPlatform): Promise<boolean> {
+    const cliReleaseChannel = await this.configuration.getCliReleaseChannel();
+    const version = await this.cliApi.getLatestCliVersion(cliReleaseChannel);
+    if (!version) {
       return false;
+    }
+    const latestChecksum = await this.cliApi.getSha256Checksum(version, platform);
+    const path = await this.configuration.getCliPath();
+    // migration for moving from default extension path to xdg dirs.
+    if (CliExecutable.isPathInExtensionDirectory(this.extensionContext.extensionPath, path)) {
+      try {
+        await fsPromises.unlink(path);
+      } catch {
+        // eslint-disable-next-line no-empty
+      }
+      await this.configuration.setCliPath(await CliExecutable.getPath());
+      return true;
+    }
+    // Update is available if fetched checksum not matching the current one
+    try {
+      const checksum = await Checksum.getChecksumOf(path, latestChecksum);
+      if (checksum.verify()) {
+        this.logger.info(messages.isLatest);
+        return false;
+      }
+    } catch {
+      // if checksum check fails; force an update
+      return true;
     }
 
     return true;
   }
 
-  private async setLastLsUpdateDateAndChecksum(checksum: Checksum): Promise<void> {
-    await this.extensionContext.updateGlobalStateValue(MEMENTO_LS_LAST_UPDATE_DATE, Date.now());
-    await this.extensionContext.updateGlobalStateValue(MEMENTO_LS_CHECKSUM, checksum.checksum);
+  private async setCliChecksum(checksum: Checksum): Promise<void> {
+    await this.extensionContext.updateGlobalStateValue(MEMENTO_CLI_CHECKSUM, checksum.checksum);
   }
 
-  private async setCurrentLspVersion(): Promise<void> {
-    await this.extensionContext.updateGlobalStateValue(MEMENTO_LS_PROTOCOL_VERSION, PROTOCOL_VERSION);
-  }
-
-  private isFourDaysPassedSinceLastLsUpdate(): boolean {
-    const lastUpdateDate = this.getLastLsUpdateDate();
-    if (!lastUpdateDate) {
-      throw new Error('Last update date is not known.');
-    }
-    return Date.now() - lastUpdateDate > this.fourDaysInMs;
+  private async setCliVersion(cliVersion: string): Promise<void> {
+    await this.extensionContext.updateGlobalStateValue(MEMENTO_CLI_VERSION, cliVersion);
   }
 
   private hasLspVersionUpdated(): boolean {
@@ -133,15 +142,24 @@ export class DownloadService {
     return currentProtoclVersion != PROTOCOL_VERSION;
   }
 
-  private getLastLsUpdateDate() {
-    return this.extensionContext.getGlobalStateValue<number>(MEMENTO_LS_LAST_UPDATE_DATE);
+  private async setCurrentLspVersion(): Promise<void> {
+    await this.extensionContext.updateGlobalStateValue(MEMENTO_LS_PROTOCOL_VERSION, PROTOCOL_VERSION);
   }
 
   private getLsProtocolVersion() {
     return this.extensionContext.getGlobalStateValue<number>(MEMENTO_LS_PROTOCOL_VERSION);
   }
 
-  private getLsChecksum(): number | undefined {
-    return this.extensionContext.getGlobalStateValue<number>(MEMENTO_LS_CHECKSUM);
+  private hasCliVersionUpdated(cliVersion: string): boolean {
+    const currentVersion = this.getCliVersion();
+    return currentVersion != cliVersion;
+  }
+
+  private getCliVersion(): string | undefined {
+    return this.extensionContext.getGlobalStateValue<string>(MEMENTO_CLI_VERSION);
+  }
+
+  private getCliChecksum(): string | undefined {
+    return this.extensionContext.getGlobalStateValue<string>(MEMENTO_CLI_CHECKSUM);
   }
 }

@@ -2,11 +2,9 @@ name: CI
 on:
   pull_request:
     branches:
-      - main
+      - 'main'
   workflow_call:
-    secrets:
-      ITERATIVELY_KEY:
-        required: true
+
 jobs:
   build:
     name: Build and Test
@@ -21,7 +19,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v2
         with:
-          node-version: '14'
+          node-version: '18'
 
       - name: Cache NPM files
         uses: actions/cache@v2
@@ -42,3 +40,14 @@ jobs:
 
       - name: Run unit tests
         run: npm run test:unit
+
+      - name: Run integration tests
+        run: |
+          sudo apt-get install xvfb
+          xvfb-run --auto-servernum npm run test:integration
+        if: runner.os == 'Linux'
+      - name: Run integration tests
+        run: npm run test:integration
+        if: runner.os != 'Linux'
+
+

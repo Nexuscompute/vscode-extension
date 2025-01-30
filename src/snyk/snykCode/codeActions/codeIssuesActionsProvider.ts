@@ -1,5 +1,4 @@
 import { CodeAction, Range, TextDocument } from 'vscode';
-import { IAnalytics, SupportedQuickFixProperties } from '../../common/analytics/itly';
 import { OpenCommandIssueType, OpenIssueCommandArg } from '../../common/commands/types';
 import { SNYK_IGNORE_ISSUE_COMMAND, SNYK_OPEN_ISSUE_COMMAND } from '../../common/constants/commands';
 import { CodeActionsProvider } from '../../common/editor/codeActionsProvider';
@@ -11,6 +10,8 @@ import { IVSCodeLanguages } from '../../common/vscode/languages';
 import { FILE_IGNORE_ACTION_NAME, IGNORE_ISSUE_ACTION_NAME } from '../constants/analysis';
 import { IssueUtils } from '../utils/issueUtils';
 import { CodeIssueCommandArg } from '../views/interfaces';
+import { IConfiguration } from '../../common/configuration/configuration';
+import { FEATURE_FLAGS } from '../../common/constants/featureFlags';
 
 export class SnykCodeActionsProvider extends CodeActionsProvider<CodeIssueData> {
   constructor(
@@ -18,9 +19,9 @@ export class SnykCodeActionsProvider extends CodeActionsProvider<CodeIssueData> 
     private readonly codeActionAdapter: ICodeActionAdapter,
     codeActionKindAdapter: ICodeActionKindAdapter,
     private readonly languages: IVSCodeLanguages,
-    analytics: IAnalytics,
+    private readonly configuration: IConfiguration,
   ) {
-    super(issues, codeActionKindAdapter, analytics);
+    super(issues, codeActionKindAdapter);
   }
 
   getActions(folderPath: string, document: TextDocument, issue: Issue<CodeIssueData>, range: Range): CodeAction[] {
@@ -28,12 +29,15 @@ export class SnykCodeActionsProvider extends CodeActionsProvider<CodeIssueData> 
     const ignoreIssueAction = this.createIgnoreIssueAction(document, issue, range, false);
     const fileIgnoreIssueAction = this.createIgnoreIssueAction(document, issue, range, true);
 
-    // returns list of actions, all new actions should be added to this list
-    return [openIssueAction, ignoreIssueAction, fileIgnoreIssueAction];
-  }
+    const actions = [openIssueAction];
 
-  getAnalyticsActionTypes(): [string, ...string[]] & [SupportedQuickFixProperties, ...SupportedQuickFixProperties[]] {
-    return ['Show Suggestion', 'Ignore Suggestion In Line', 'Ignore Suggestion In File'];
+    if (this.configuration.getFeatureFlag(FEATURE_FLAGS.snykCodeInlineIgnore)) {
+      actions.push(fileIgnoreIssueAction);
+      actions.push(ignoreIssueAction);
+    }
+
+    // returns list of actions, all new actions should be added to this list
+    return actions;
   }
 
   getIssueRange(issue: Issue<CodeIssueData>): Range {

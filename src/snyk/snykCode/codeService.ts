@@ -1,5 +1,4 @@
 import { Subscription } from 'rxjs';
-import { IAnalytics } from '../common/analytics/itly';
 import { IConfiguration } from '../common/configuration/configuration';
 import { IWorkspaceTrust } from '../common/configuration/trustedFolders';
 import { ILanguageServer } from '../common/languageServer/languageServer';
@@ -13,8 +12,11 @@ import { IVSCodeLanguages } from '../common/vscode/languages';
 import { IVSCodeWorkspace } from '../common/vscode/workspace';
 import { SnykCodeActionsProvider } from './codeActions/codeIssuesActionsProvider';
 import { ICodeSuggestionWebviewProvider } from './views/interfaces';
+import { IDiagnosticsIssueProvider } from '../common/services/diagnosticsService';
 
 export class SnykCodeService extends ProductService<CodeIssueData> {
+  public readonly productType = ScanProduct.Code;
+
   constructor(
     extensionContext: ExtensionContext,
     config: IConfiguration,
@@ -26,8 +28,8 @@ export class SnykCodeService extends ProductService<CodeIssueData> {
     workspaceTrust: IWorkspaceTrust,
     languageServer: ILanguageServer,
     languages: IVSCodeLanguages,
+    readonly diagnosticsIssueProvider: IDiagnosticsIssueProvider<CodeIssueData>,
     logger: ILog,
-    readonly analytics: IAnalytics,
   ) {
     super(
       extensionContext,
@@ -38,11 +40,12 @@ export class SnykCodeService extends ProductService<CodeIssueData> {
       workspaceTrust,
       languageServer,
       languages,
+      diagnosticsIssueProvider,
       logger,
     );
 
     this.registerCodeActionsProvider(
-      new SnykCodeActionsProvider(this.result, codeActionAdapter, codeActionKindAdapter, languages, analytics),
+      new SnykCodeActionsProvider(this.result, codeActionAdapter, codeActionKindAdapter, languages, config),
     );
   }
 

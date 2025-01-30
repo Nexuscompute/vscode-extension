@@ -2,14 +2,14 @@ name: Build and Release
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 9 * * 2' # every Tuesday at 9 am UTC
+    branches:
+      - main
+  # schedule: TODO: align release schedule with CLI
+  #   - cron: '0 9 * * 2' # every Tuesday at 9 am UTC
 
 jobs:
   build:
     uses: snyk/vscode-extension/.github/workflows/ci.yaml@main
-    secrets:
-      ITERATIVELY_KEY: ${{ secrets.ITERATIVELY_KEY }}
 
   publish:
     runs-on: ubuntu-latest
@@ -29,21 +29,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify analytics events
-        run: npm run ampli:verify -- -t ${{ secrets.ITERATIVELY_KEY }}
-
       - name: Bump patch version
         id: patched-tag
         uses: mathieudutour/github-tag-action@v6.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          release_branches: main
+          release_branches: main,fix.*,chore.*
           default_bump: patch
 
       - name: Add Credentials
         run: |
           sed -i \
-              -e 's|${env.SNYK_VSCE_SEGMENT_WRITE_KEY}|${{ secrets.SNYK_VSCE_SEGMENT_WRITE_KEY }}|g' \
               -e 's|${env.SNYK_VSCE_AMPLITUDE_EXPERIMENT_API_KEY}|${{ secrets.SNYK_VSCE_AMPLITUDE_EXPERIMENT_API_KEY }}|g' \
               -e 's|${env.SNYK_VSCE_SENTRY_DSN_KEY}|${{ secrets.SNYK_VSCE_SENTRY_DSN_KEY }}|g' \
               snyk.config.json
@@ -67,7 +63,14 @@ jobs:
         run: npm ci
 
       - name: Package VSIX
-        run: echo y | vsce package --no-git-tag-version --no-update-package-json ${{ needs.publish.outputs.new-version }}
+        run: |
+          run: |
+          sed -i \
+              -e 's|${env.SNYK_VSCE_AMPLITUDE_EXPERIMENT_API_KEY}|${{ secrets.SNYK_VSCE_AMPLITUDE_EXPERIMENT_API_KEY }}|g' \
+              -e 's|${env.SNYK_VSCE_SENTRY_DSN_KEY}|${{ secrets.SNYK_VSCE_SENTRY_DSN_KEY }}|g' \
+              snyk.config.json
+
+          echo y | vsce package --no-git-tag-version --no-update-package-json ${{ needs.publish.outputs.new-version }}
 
       - name: Extract release notes
         id: extract-release-notes

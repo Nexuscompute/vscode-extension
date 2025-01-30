@@ -13,11 +13,14 @@ import { IVSCodeLanguages } from '../../../../snyk/common/vscode/languages';
 import { IVSCodeWorkspace } from '../../../../snyk/common/vscode/workspace';
 import { LanguageServerMock } from '../../mocks/languageServer.mock';
 import { LoggerMock } from '../../mocks/logger.mock';
+import { IDiagnosticsIssueProvider } from '../../../../snyk/common/services/diagnosticsService';
 
 type ProductData = {
   productName: string;
 };
 class MockProductService extends ProductService<ProductData> {
+  productType: ScanProduct;
+
   subscribeToLsScanMessages(): Subscription {
     return this.languageServer.scan$.subscribe((scan: Scan<unknown>) => {
       super.handleLsScanMessage(scan as Scan<ProductData>);
@@ -53,6 +56,9 @@ suite('Product Service', () => {
       new WorkspaceTrust(),
       ls,
       {} as IVSCodeLanguages,
+      {
+        getIssuesFromDiagnostics: () => [],
+      } as IDiagnosticsIssueProvider<ProductData>,
       new LoggerMock(),
     );
   });
@@ -67,6 +73,7 @@ suite('Product Service', () => {
       folderPath: 'test/path',
       issues: [],
       status: ScanStatus.InProgress,
+      errorMessage: '',
     });
 
     strictEqual(service.isAnalysisRunning, true);
@@ -80,12 +87,14 @@ suite('Product Service', () => {
       folderPath,
       issues: [],
       status: ScanStatus.InProgress,
+      errorMessage: '',
     });
     ls.scan$.next({
       product: ScanProduct.InfrastructureAsCode,
       folderPath,
       issues: [],
       status: ScanStatus.Success,
+      errorMessage: '',
     });
 
     strictEqual(service.isAnalysisRunning, false);
@@ -99,12 +108,14 @@ suite('Product Service', () => {
       folderPath,
       issues: [],
       status: ScanStatus.InProgress,
+      errorMessage: 'Scan failed',
     });
     ls.scan$.next({
       product: ScanProduct.InfrastructureAsCode,
       folderPath,
       issues: [],
       status: ScanStatus.Error,
+      errorMessage: 'Scan failed',
     });
 
     strictEqual(service.isAnalysisRunning, false);
@@ -119,18 +130,21 @@ suite('Product Service', () => {
       folderPath: folder1Path,
       issues: [],
       status: ScanStatus.InProgress,
+      errorMessage: '',
     });
     ls.scan$.next({
       product: ScanProduct.InfrastructureAsCode,
       folderPath: folder2Path,
       issues: [],
       status: ScanStatus.InProgress,
+      errorMessage: '',
     });
     ls.scan$.next({
       product: ScanProduct.InfrastructureAsCode,
       folderPath: folder1Path,
       issues: [],
       status: ScanStatus.Success,
+      errorMessage: '',
     });
 
     strictEqual(service.isAnalysisRunning, true);
@@ -140,6 +154,7 @@ suite('Product Service', () => {
       folderPath: folder2Path,
       issues: [],
       status: ScanStatus.Success,
+      errorMessage: '',
     });
 
     strictEqual(service.isAnalysisRunning, false);

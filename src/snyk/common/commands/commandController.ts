@@ -2,14 +2,10 @@
 import _ from 'lodash';
 import { IAuthenticationService } from '../../base/services/authenticationService';
 import { ScanModeService } from '../../base/services/scanModeService';
-import { createDCIgnore } from '../../snykCode/utils/ignoreFileUtils';
-import { IssueUtils } from '../../snykCode/utils/issueUtils';
+import { createDCIgnore as createDCIgnoreUtil } from '../../snykCode/utils/ignoreFileUtils';
 import { CodeIssueCommandArg } from '../../snykCode/views/interfaces';
 import { IacIssueCommandArg } from '../../snykIac/views/interfaces';
-import { capitalizeOssSeverity } from '../../snykOss/ossResult';
-import { OssService } from '../../snykOss/services/ossService';
-import { OssIssueCommandArg } from '../../snykOss/views/ossVulnerabilityTreeProvider';
-import { IAnalytics } from '../analytics/itly';
+import { OssService } from '../../snykOss/ossService';
 import {
   SNYK_INITIATE_LOGIN_COMMAND,
   SNYK_LOGIN_COMMAND,
@@ -18,7 +14,7 @@ import {
   SNYK_TRUST_WORKSPACE_FOLDERS_COMMAND,
   VSCODE_GO_TO_SETTINGS_COMMAND,
 } from '../constants/commands';
-import { COMMAND_DEBOUNCE_INTERVAL, IDE_NAME, SNYK_NAME_EXTENSION, SNYK_PUBLISHER } from '../constants/general';
+import { COMMAND_DEBOUNCE_INTERVAL } from '../constants/general';
 import { ErrorHandler } from '../error/errorHandler';
 import { ILanguageServer } from '../languageServer/languageServer';
 import { CodeIssueData, IacIssueData } from '../languageServer/types';
@@ -31,6 +27,8 @@ import { IUriAdapter } from '../vscode/uri';
 import { IVSCodeWindow } from '../vscode/window';
 import { IVSCodeWorkspace } from '../vscode/workspace';
 import { OpenCommandIssueType, OpenIssueCommandArg } from './types';
+import { IFolderConfigs } from '../configuration/folderConfigs';
+import { IConfiguration } from '../configuration/configuration';
 
 export class CommandController {
   private debouncedCommands: Record<string, _.DebouncedFunc<(...args: unknown[]) => Promise<unknown>>> = {};
@@ -47,7 +45,8 @@ export class CommandController {
     private window: IVSCodeWindow,
     private languageServer: ILanguageServer,
     private logger: ILog,
-    private analytics: IAnalytics,
+    private configuration: IConfiguration,
+    private folderConfigs: IFolderConfigs,
   ) {}
 
   openBrowser(url: string): unknown {
@@ -81,8 +80,16 @@ export class CommandController {
     }
   }
 
+  async setBaseBranch(folderPath: string): Promise<void> {
+    await this.folderConfigs.setBranch(this.window, this.configuration, folderPath);
+  }
+
+  async toggleDelta(isEnabled: boolean): Promise<void> {
+    await this.configuration.setDeltaFindingsEnabled(isEnabled);
+  }
+
   openSettings(): void {
-    void this.commands.executeCommand(VSCODE_GO_TO_SETTINGS_COMMAND, `@ext:${SNYK_PUBLISHER}.${SNYK_NAME_EXTENSION}`);
+    void this.commands.executeCommand(VSCODE_GO_TO_SETTINGS_COMMAND, `@ext:${this.configuration.getExtensionId()}`);
   }
 
   async createDCIgnore(custom = false, uriAdapter: IUriAdapter, path?: string): Promise<void> {
@@ -90,11 +97,11 @@ export class CommandController {
       const paths = this.workspace.getWorkspaceFolders();
       const promises = [];
       for (const p of paths) {
-        promises.push(createDCIgnore(p, custom, this.workspace, this.window, uriAdapter));
+        promises.push(createDCIgnoreUtil(p, custom, this.workspace, this.window, uriAdapter));
       }
       await Promise.all(promises);
     } else {
-      await createDCIgnore(path, custom, this.workspace, this.window, uriAdapter);
+      await createDCIgnoreUtil(path, custom, this.workspace, this.window, uriAdapter);
     }
   }
 
@@ -114,23 +121,23 @@ export class CommandController {
       } catch (e) {
         ErrorHandler.handle(e, this.logger);
       }
-
-      this.analytics.logIssueInTreeIsClicked({
-        ide: IDE_NAME,
-        issueId: decodeURIComponent(issue.id),
-        issueType: IssueUtils.getIssueType(issue.additionalData.isSecurityType),
-        severity: IssueUtils.issueSeverityAsText(issue.severity),
-      });
     } else if (arg.issueType == OpenCommandIssueType.OssVulnerability) {
-      const issue = arg.issue as OssIssueCommandArg;
-      void this.ossService.showSuggestionProvider(issue);
+      const issueArgs = arg.issue as CodeIssueCommandArg;
+      const folderPath = issueArgs.folderPath;
+      const issue = this.ossService.getIssue(folderPath, issueArgs.id);
 
-      this.analytics.logIssueInTreeIsClicked({
-        ide: IDE_NAME,
-        issueId: issue.id,
-        issueType: 'Open Source Vulnerability',
-        severity: capitalizeOssSeverity(issue.severity),
-      });
+      if (!issue) {
+        this.logger.warn(`Failed to find the issue ${issueArgs.id}.`);
+        return;
+      }
+
+      await this.openLocalFile(issue.filePath, issueArgs.range);
+
+      try {
+        await this.ossService.showSuggestionProvider(folderPath, issueArgs.id);
+      } catch (e) {
+        ErrorHandler.handle(e, this.logger);
+      }
     } else if (arg.issueType == OpenCommandIssueType.IacIssue) {
       const issueArgs = arg.issue as IacIssueCommandArg;
       const issue = this.iacService.getIssue(issueArgs.folderPath, issueArgs.id);
@@ -146,13 +153,6 @@ export class CommandController {
       } catch (e) {
         ErrorHandler.handle(e, this.logger);
       }
-
-      this.analytics.logIssueInTreeIsClicked({
-        ide: IDE_NAME,
-        issueId: issue.id,
-        issueType: 'Infrastructure as Code Issue',
-        severity: IssueUtils.issueSeverityAsText(issue.severity),
-      });
     }
   }
 

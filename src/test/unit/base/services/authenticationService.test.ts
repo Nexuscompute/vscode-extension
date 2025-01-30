@@ -1,11 +1,8 @@
-import { getIpFamily } from '@snyk/code-client';
-import { rejects, strictEqual } from 'assert';
-import needle, { NeedleResponse } from 'needle';
+import { rejects } from 'assert';
 import sinon from 'sinon';
 import { IBaseSnykModule } from '../../../../snyk/base/modules/interfaces';
 import { AuthenticationService, OAuthToken } from '../../../../snyk/base/services/authenticationService';
 import { ILoadingBadge } from '../../../../snyk/base/views/loadingBadge';
-import { IAnalytics } from '../../../../snyk/common/analytics/itly';
 import { IConfiguration } from '../../../../snyk/common/configuration/configuration';
 import { DID_CHANGE_CONFIGURATION_METHOD } from '../../../../snyk/common/constants/languageServer';
 import { SNYK_CONTEXT } from '../../../../snyk/common/constants/views';
@@ -23,24 +20,15 @@ suite('AuthenticationService', () => {
   let languageClientAdapter: ILanguageClientAdapter;
   let languageClientSendNotification: sinon.SinonSpy;
   let setContextSpy: sinon.SinonSpy;
+  let setEndpointSpy: sinon.SinonSpy;
   let setTokenSpy: sinon.SinonSpy;
   let clearTokenSpy: sinon.SinonSpy;
   let previewFeaturesSpy: sinon.SinonSpy;
 
-  const NEEDLE_DEFAULT_TIMEOUT = 1000;
-
-  const overrideNeedleTimeoutOptions = {
-    // eslint-disable-next-line camelcase
-    open_timeout: NEEDLE_DEFAULT_TIMEOUT,
-    // eslint-disable-next-line camelcase
-    response_timeout: NEEDLE_DEFAULT_TIMEOUT,
-    // eslint-disable-next-line camelcase
-    read_timeout: NEEDLE_DEFAULT_TIMEOUT,
-  };
-
   setup(() => {
     baseModule = {} as IBaseSnykModule;
     setContextSpy = sinon.fake();
+    setEndpointSpy = sinon.fake();
     setTokenSpy = sinon.fake();
     clearTokenSpy = sinon.fake();
     languageClientSendNotification = sinon.fake();
@@ -60,6 +48,7 @@ suite('AuthenticationService', () => {
 
     config = {
       authHost: '',
+      setEndpoint: setEndpointSpy,
       setToken: setTokenSpy,
       clearToken: clearTokenSpy,
       getPreviewFeatures: previewFeaturesSpy,
@@ -68,80 +57,12 @@ suite('AuthenticationService', () => {
 
   teardown(() => sinon.restore());
 
-  test("Logs 'Authentication Button is Clicked' analytical event", async () => {
-    const logAuthenticateButtonIsClickedFake = sinon.fake();
-    const analytics = {
-      logAuthenticateButtonIsClicked: logAuthenticateButtonIsClickedFake,
-    } as unknown as IAnalytics;
-    const service = new AuthenticationService(
-      contextService,
-      baseModule,
-      config,
-      windowMock,
-      analytics,
-      new LoggerMock(),
-      languageClientAdapter,
-      {} as IVSCodeCommands,
-    );
-
-    await service.initiateLogin();
-
-    strictEqual(logAuthenticateButtonIsClickedFake.calledOnce, true);
-  });
-
-  // TODO: the following two tests are more of integration tests, since the second requires access to the network layer. Move it to integration test as part of ROAD-625.
-  test('getIpFamily returns undefined when IPv6 not supported', async () => {
-    const ipv6ErrorCode = 'EADDRNOTAVAIL';
-
-    // code-client calls 'needle', thus it's the easiest place to stub the response when IPv6 is not supported by the OS network stack. Otherwise, Node internals must be stubbed to return the error.
-    sinon.stub(needle, 'request').callsFake((_, uri, data, opts, callback) => {
-      if (!callback) throw new Error();
-      callback(
-        {
-          code: ipv6ErrorCode,
-          errno: ipv6ErrorCode,
-        } as unknown as Error,
-        {} as unknown as NeedleResponse,
-        null,
-      );
-      // eslint-disable-next-line camelcase
-      return needle.post(uri, data, { ...opts, ...overrideNeedleTimeoutOptions });
-    });
-
-    const ipFamily = await getIpFamily('https://dev.snyk.io');
-
-    strictEqual(ipFamily, undefined);
-  });
-
-  test('getIpFamily returns 6 when IPv6 supported', async () => {
-    sinon.stub(needle, 'request').callsFake((_, uri, data, opts, callback) => {
-      if (!callback) throw new Error();
-      callback(
-        null,
-        {
-          body: {
-            response: {
-              statusCode: 401,
-              body: {},
-            },
-          },
-        } as NeedleResponse,
-        null,
-      );
-      return needle.post(uri, data, { ...opts, ...overrideNeedleTimeoutOptions });
-    });
-
-    const ipFamily = await getIpFamily('https://dev.snyk.io');
-    strictEqual(ipFamily, 6);
-  });
-
   test("Doesn't call setToken when token is empty", async () => {
     const service = new AuthenticationService(
       contextService,
       baseModule,
       config,
       windowMock,
-      {} as IAnalytics,
       new LoggerMock(),
       languageClientAdapter,
       {} as IVSCodeCommands,
@@ -160,7 +81,6 @@ suite('AuthenticationService', () => {
       baseModule,
       config,
       windowMock,
-      {} as IAnalytics,
       new LoggerMock(),
       languageClientAdapter,
       {} as IVSCodeCommands,
@@ -174,7 +94,7 @@ suite('AuthenticationService', () => {
     sinon.assert.calledOnceWithExactly(languageClientSendNotification, DID_CHANGE_CONFIGURATION_METHOD, {});
   });
 
-  suite('.updateToken()', () => {
+  suite('.updateTokenAndEndpoint()', () => {
     let service: AuthenticationService;
     const setLoadingBadgeFake = sinon.fake();
 
@@ -190,7 +110,6 @@ suite('AuthenticationService', () => {
         baseModule,
         config,
         windowMock,
-        {} as IAnalytics,
         new LoggerMock(),
         languageClientAdapter,
         {
@@ -199,15 +118,17 @@ suite('AuthenticationService', () => {
       );
     });
 
-    test('sets the token when a valid token is provided', async () => {
+    test('sets the token and endpoint when a valid token is provided', async () => {
       const token = 'be30e2dd-95ac-4450-ad90-5f7cc7429258';
-      await service.updateToken(token);
+      const apiUrl = 'https://api.snyk.io';
+      await service.updateTokenAndEndpoint(token, apiUrl);
 
+      sinon.assert.calledWith(setEndpointSpy, apiUrl);
       sinon.assert.calledWith(setTokenSpy, token);
     });
 
     test('logs out if token is empty', async () => {
-      await service.updateToken('');
+      await service.updateTokenAndEndpoint('', '');
 
       sinon.assert.called(clearTokenSpy);
       sinon.assert.calledWith(setContextSpy, SNYK_CONTEXT.LOGGEDIN, false);
@@ -215,7 +136,8 @@ suite('AuthenticationService', () => {
 
     test('sets the proper contexts when setting new token', async () => {
       const token = 'be30e2dd-95ac-4450-ad90-5f7cc7429258';
-      await service.updateToken(token);
+      const apiUrl = 'https://api.snyk.io';
+      await service.updateTokenAndEndpoint(token, apiUrl);
 
       sinon.assert.calledWith(setContextSpy, SNYK_CONTEXT.LOGGEDIN, true);
       sinon.assert.calledWith(setContextSpy, SNYK_CONTEXT.AUTHENTICATING, false);
@@ -223,15 +145,17 @@ suite('AuthenticationService', () => {
 
     test('sets the loading badge status when setting new token', async () => {
       const token = 'be30e2dd-95ac-4450-ad90-5f7cc7429258';
-      await service.updateToken(token);
+      const apiUrl = 'https://api.snyk.io';
+      await service.updateTokenAndEndpoint(token, apiUrl);
 
       sinon.assert.calledWith(setLoadingBadgeFake, false);
     });
 
     test('errors when invalid token is provided', async () => {
       const invalidToken = 'thisTokenIsNotValid';
+      const apiUrl = 'https://api.snyk.io';
 
-      await rejects(service.updateToken(invalidToken));
+      await rejects(service.updateTokenAndEndpoint(invalidToken, apiUrl));
       sinon.assert.notCalled(setTokenSpy);
     });
 
@@ -244,15 +168,19 @@ suite('AuthenticationService', () => {
         refresh_token: 'refresh_token',
       };
       const oauthTokenString = JSON.stringify(oauthToken);
+      const apiUrl = 'https://api.snyk.io';
 
-      await service.updateToken(oauthTokenString);
+      await service.updateTokenAndEndpoint(oauthTokenString, apiUrl);
+      sinon.assert.calledWith(setEndpointSpy, apiUrl);
       sinon.assert.calledWith(setTokenSpy, oauthTokenString);
     });
 
     test('fails with error on non oauth token json string', async () => {
       const oauthTokenString = '{}';
+      const apiUrl = 'https://api.snyk.io';
 
-      await rejects(service.updateToken(oauthTokenString));
+      await rejects(service.updateTokenAndEndpoint(oauthTokenString, apiUrl));
+
       sinon.assert.notCalled(setTokenSpy);
     });
 
@@ -265,8 +193,9 @@ suite('AuthenticationService', () => {
         refresh_token: 'refresh_token',
       };
       const oauthTokenString = JSON.stringify(oauthToken);
+      const apiUrl = 'https://api.snyk.io';
 
-      await rejects(service.updateToken(oauthTokenString));
+      await rejects(service.updateTokenAndEndpoint(oauthTokenString, apiUrl));
       sinon.assert.notCalled(setTokenSpy);
     });
   });

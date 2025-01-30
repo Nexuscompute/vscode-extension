@@ -1,46 +1,41 @@
 import _ from 'lodash';
+import { relative } from 'path';
+import { applyPatch } from 'diff';
+import { marked } from 'marked';
 import * as vscode from 'vscode';
 import {
+  SNYK_CODE_FIX_DIFFS_COMMAND,
+  SNYK_GENERATE_ISSUE_DESCRIPTION,
+  SNYK_CODE_SUBMIT_FIX_FEEDBACK,
   SNYK_IGNORE_ISSUE_COMMAND,
   SNYK_OPEN_BROWSER_COMMAND,
   SNYK_OPEN_LOCAL_COMMAND,
 } from '../../../common/constants/commands';
 import { SNYK_VIEW_SUGGESTION_CODE } from '../../../common/constants/views';
 import { ErrorHandler } from '../../../common/error/errorHandler';
-import { CodeIssueData, ExampleCommitFix, Issue, Marker, Point } from '../../../common/languageServer/types';
+import { AutofixUnifiedDiffSuggestion, CodeIssueData, Issue } from '../../../common/languageServer/types';
 import { ILog } from '../../../common/logger/interfaces';
 import { messages as learnMessages } from '../../../common/messages/learn';
 import { LearnService } from '../../../common/services/learnService';
 import { getNonce } from '../../../common/views/nonce';
-import { WebviewPanelSerializer } from '../../../common/views/webviewPanelSerializer';
 import { WebviewProvider } from '../../../common/views/webviewProvider';
 import { ExtensionContext } from '../../../common/vscode/extensionContext';
 import { IVSCodeLanguages } from '../../../common/vscode/languages';
 import { IVSCodeWindow } from '../../../common/vscode/window';
 import { IVSCodeWorkspace } from '../../../common/vscode/workspace';
-import { WEBVIEW_PANEL_QUALITY_TITLE, WEBVIEW_PANEL_SECURITY_TITLE } from '../../constants/analysis';
+import { WEBVIEW_PANEL_SECURITY_TITLE } from '../../constants/analysis';
 import { messages as errorMessages } from '../../messages/error';
 import { getAbsoluteMarkerFilePath } from '../../utils/analysisUtils';
+import { generateDecorationOptions } from '../../utils/patchUtils';
 import { IssueUtils } from '../../utils/issueUtils';
 import { ICodeSuggestionWebviewProvider } from '../interfaces';
-
-type Suggestion = {
-  id: string;
-  message: string;
-  severity: string;
-  leadURL?: string;
-  rule: string;
-  repoDatasetSize: number;
-  exampleCommitFixes: ExampleCommitFix[];
-  cwe: string[];
-  title: string;
-  text: string;
-  isSecurityType: boolean;
-  uri: string;
-  markers?: Marker[];
-  cols: Point;
-  rows: Point;
-};
+import { readFileSync } from 'fs';
+import { TextDocument } from '../../../common/vscode/types';
+import { Suggestion, SuggestionMessage } from './types';
+import { WebviewPanelSerializer } from '../../../snykCode/views/webviewPanelSerializer';
+import { configuration } from '../../../common/configuration/instance';
+import { FEATURE_FLAGS } from '../../../common/constants/featureFlags';
+import { IVSCodeCommands } from '../../../common/vscode/commands';
 
 export class CodeSuggestionWebviewProvider
   extends WebviewProvider<Issue<CodeIssueData>>
@@ -57,6 +52,7 @@ export class CodeSuggestionWebviewProvider
     private readonly languages: IVSCodeLanguages,
     private readonly workspace: IVSCodeWorkspace,
     private readonly learnService: LearnService,
+    private commandExecutor: IVSCodeCommands,
   ) {
     super(context, logger);
   }
@@ -71,17 +67,21 @@ export class CodeSuggestionWebviewProvider
     return this.issue?.id;
   }
 
+  private async postSuggestMessage(message: SuggestionMessage): Promise<void> {
+    await this.panel?.webview.postMessage(message);
+  }
+
   async postLearnLessonMessage(issue: Issue<CodeIssueData>): Promise<void> {
     try {
       if (this.panel) {
         const lesson = await this.learnService.getCodeLesson(issue);
         if (lesson) {
-          void this.panel.webview.postMessage({
+          void this.postSuggestMessage({
             type: 'setLesson',
             args: { url: lesson.url, title: learnMessages.lessonButtonTitle },
           });
         } else {
-          void this.panel.webview.postMessage({
+          void this.postSuggestMessage({
             type: 'setLesson',
             args: null,
           });
@@ -95,14 +95,13 @@ export class CodeSuggestionWebviewProvider
   async showPanel(issue: Issue<CodeIssueData>): Promise<void> {
     try {
       await this.focusSecondEditorGroup();
-
       if (this.panel) {
-        this.panel.title = this.getTitle(issue);
+        this.panel.title = this.getTitle();
         this.panel.reveal(vscode.ViewColumn.Two, true);
       } else {
         this.panel = vscode.window.createWebviewPanel(
           SNYK_VIEW_SUGGESTION_CODE,
-          this.getTitle(issue),
+          this.getTitle(),
           {
             viewColumn: vscode.ViewColumn.Two,
             preserveFocus: true,
@@ -111,15 +110,46 @@ export class CodeSuggestionWebviewProvider
         );
         this.registerListeners();
       }
-      this.panel.webview.html = this.getHtmlForWebview(this.panel.webview);
+
       this.panel.iconPath = vscode.Uri.joinPath(
         vscode.Uri.file(this.context.extensionPath),
         'media',
         'images',
         'snyk-code.svg',
       );
-
-      void this.panel.webview.postMessage({ type: 'set', args: this.mapToModel(issue) });
+      // TODO: delete this when SNYK_GENERATE_ISSUE_DESCRIPTION command is in stable CLI.
+      let html: string;
+      if (issue.additionalData.details) {
+        html = issue.additionalData.details;
+      } else {
+        html = (await this.commandExecutor.executeCommand(SNYK_GENERATE_ISSUE_DESCRIPTION, issue.id)) ?? '';
+      }
+      const ideStylePath = vscode.Uri.joinPath(
+        vscode.Uri.file(this.context.extensionPath),
+        'media',
+        'views',
+        'snykCode',
+        'suggestion',
+        'suggestionLS.css',
+      );
+      const ideStyle = readFileSync(ideStylePath.fsPath, 'utf8');
+      const ideScriptPath = vscode.Uri.joinPath(
+        vscode.Uri.file(this.context.extensionPath),
+        'out',
+        'snyk',
+        'snykCode',
+        'views',
+        'suggestion',
+        'codeSuggestionWebviewScriptLS.js',
+      );
+      const ideScript = readFileSync(ideScriptPath.fsPath, 'utf8');
+      html = html.replace('${ideStyle}', '<style nonce=${nonce}>' + ideStyle + '</style>');
+      html = html.replace('${ideScript}', '<script nonce=${nonce}>' + ideScript + '</script>');
+      const nonce = getNonce();
+      html = html.replaceAll('${nonce}', nonce);
+      html = html.replace('--default-font: ', '--default-font: var(--vscode-font-family) ,');
+      this.panel.webview.html = html;
+      void this.postSuggestMessage({ type: 'set', args: this.mapToModel(issue) });
       void this.postLearnLessonMessage(issue);
 
       this.issue = issue;
@@ -134,7 +164,11 @@ export class CodeSuggestionWebviewProvider
     this.panel.onDidDispose(() => this.onPanelDispose(), null, this.disposables);
     this.panel.onDidChangeViewState(() => this.checkVisibility(), undefined, this.disposables);
     // Handle messages from the webview
-    this.panel.webview.onDidReceiveMessage(msg => this.handleMessage(msg), undefined, this.disposables);
+    this.panel.webview.onDidReceiveMessage(
+      (msg: SuggestionMessage) => this.handleMessage(msg),
+      undefined,
+      this.disposables,
+    );
   }
 
   disposePanel(): void {
@@ -145,58 +179,132 @@ export class CodeSuggestionWebviewProvider
     super.onPanelDispose();
   }
 
+  private getWorkspaceFolderPath(filePath: string) {
+    // get the workspace folders
+    // look at the filepath and identify the folder that contains the filepath
+    for (const folderPath of this.workspace.getWorkspaceFolders()) {
+      if (filePath.startsWith(folderPath)) {
+        return folderPath;
+      }
+    }
+    throw new Error(`Unable to find workspace for: ${filePath}`);
+  }
+
   private mapToModel(issue: Issue<CodeIssueData>): Suggestion {
+    const parsedDetails = marked.parse(issue.additionalData.text) as string;
+    const showInlineIgnoresButton = configuration.getFeatureFlag(FEATURE_FLAGS.snykCodeInlineIgnore);
+
     return {
       id: issue.id,
       title: issue.title,
-      uri: issue.filePath,
       severity: _.capitalize(issue.severity),
       ...issue.additionalData,
+      text: parsedDetails,
+      hasAIFix: issue.additionalData.hasAIFix,
+      filePath: issue.filePath,
+      showInlineIgnoresButton,
     };
   }
 
-  private async handleMessage(message: any) {
+  private async handleMessage(message: SuggestionMessage) {
     try {
-      const { type, args } = message;
-      switch (type) {
+      switch (message.type) {
         case 'openLocal': {
-          const { uri, cols, rows, suggestionUri } = args as {
-            uri: string;
-            cols: [number, number];
-            rows: [number, number];
-            suggestionUri: string;
-          };
+          const { uri, cols, rows, suggestionUri } = message.args;
           const localUriPath = getAbsoluteMarkerFilePath(this.workspace, uri, suggestionUri);
           const localUri = vscode.Uri.file(localUriPath);
           const range = IssueUtils.createVsCodeRangeFromRange(rows, cols, this.languages);
           await vscode.commands.executeCommand(SNYK_OPEN_LOCAL_COMMAND, localUri, range);
           break;
         }
+
         case 'openBrowser': {
-          const { url } = args as { url: string };
+          const { url } = message.args;
           await vscode.commands.executeCommand(SNYK_OPEN_BROWSER_COMMAND, url);
           break;
         }
+
         case 'ignoreIssue': {
-          const { lineOnly, message, rule, uri, cols, rows } = args as {
-            lineOnly: boolean;
-            message: string;
-            rule: string;
-            uri: string;
-            cols: [number, number];
-            rows: [number, number];
-          };
+          const { lineOnly, rule, uri, cols, rows } = message.args;
           const vscodeUri = vscode.Uri.file(uri);
           const range = IssueUtils.createVsCodeRangeFromRange(rows, cols, this.languages);
           await vscode.commands.executeCommand(SNYK_IGNORE_ISSUE_COMMAND, {
             uri: vscodeUri,
-            matchedIssue: { message, range },
+            matchedIssue: {
+              message: message.args.message,
+              range,
+            },
             ruleId: rule,
             isFileIgnore: !lineOnly,
           });
           this.panel?.dispose();
           break;
         }
+
+        case 'getAutofixDiffs': {
+          this.logger.info('Generating fixes');
+
+          const { suggestion } = message.args;
+          try {
+            const filePath = suggestion.filePath;
+            const folderPath = this.getWorkspaceFolderPath(filePath);
+            const relativePath = relative(folderPath, filePath);
+
+            const issueId = suggestion.id;
+
+            const diffs: AutofixUnifiedDiffSuggestion[] = await vscode.commands.executeCommand(
+              SNYK_CODE_FIX_DIFFS_COMMAND,
+              folderPath,
+              relativePath,
+              issueId,
+            );
+            // todo(berkay.berabi): Here if suggestions are empty, we should post a different type of message that
+            // will show the user correct information, namely: we tried but no fixes available for now.
+
+            void this.postSuggestMessage({ type: 'setAutofixDiffs', args: { suggestion, diffs } });
+          } catch (error) {
+            void this.postSuggestMessage({ type: 'setAutofixError', args: { suggestion } });
+          }
+
+          break;
+        }
+
+        case 'applyGitDiff': {
+          const { patch, filePath, fixId } = message.args;
+
+          const fileContent = readFileSync(filePath, 'utf8');
+          const patchedContent = applyPatch(fileContent, patch);
+
+          if (!patchedContent) {
+            throw Error('Failed to apply patch');
+          }
+          const edit = new vscode.WorkspaceEdit();
+
+          const editor = vscode.window.visibleTextEditors.find(editor => editor.document.uri.fsPath === filePath);
+
+          if (!editor) {
+            throw Error(`Editor with file not found: ${filePath}`);
+          }
+
+          const editorEndLine = editor.document.lineCount;
+          edit.replace(vscode.Uri.file(filePath), new vscode.Range(0, 0, editorEndLine, 0), patchedContent);
+
+          const success = await vscode.workspace.applyEdit(edit);
+          if (!success) {
+            throw Error('Failed to apply edit to workspace');
+          }
+
+          this.highlightAddedCode(filePath, patch);
+          this.setupCloseOnSave(filePath);
+
+          try {
+            await vscode.commands.executeCommand(SNYK_CODE_SUBMIT_FIX_FEEDBACK, fixId, 'FIX_APPLIED');
+          } catch (e) {
+            throw new Error('Error in submit fix feedback');
+          }
+          break;
+        }
+
         default: {
           throw new Error('Unknown message type');
         }
@@ -206,122 +314,66 @@ export class CodeSuggestionWebviewProvider
     }
   }
 
-  private getTitle(issue: Issue<CodeIssueData>): string {
-    return issue.additionalData.isSecurityType ? WEBVIEW_PANEL_SECURITY_TITLE : WEBVIEW_PANEL_QUALITY_TITLE;
+  private setupCloseOnSave(filePath: string) {
+    vscode.workspace.onDidSaveTextDocument((e: TextDocument) => {
+      if (e.uri.fsPath == filePath) {
+        this.panel?.dispose();
+      }
+    });
   }
 
-  protected getHtmlForWebview(webview: vscode.Webview): string {
-    const images: Record<string, string> = [
-      ['icon-external', 'svg'],
-      ['icon-code', 'svg'],
-      ['icon-github', 'svg'],
-      ['icon-like', 'svg'],
-      ['dark-low-severity', 'svg'],
-      ['dark-medium-severity', 'svg'],
-      ['dark-high-severity', 'svg'],
-      ['light-icon-critical', 'svg'],
-      ['arrow-left-dark', 'svg'],
-      ['arrow-right-dark', 'svg'],
-      ['arrow-left-light', 'svg'],
-      ['arrow-right-light', 'svg'],
-      ['learn-icon', 'svg'],
-    ].reduce<Record<string, string>>((accumulator: Record<string, string>, [name, ext]) => {
-      const uri = this.getWebViewUri('media', 'images', `${name}.${ext}`);
-      if (!uri) throw new Error('Image missing.');
-      accumulator[name] = uri.toString();
-      return accumulator;
-    }, {});
+  private highlightAddedCode(filePath: string, diffData: string) {
+    const highlightDecoration = vscode.window.createTextEditorDecorationType({
+      // seems to work well with both dark and light backgrounds
+      backgroundColor: 'rgba(0,255,0,0.3)',
+    });
 
-    const scriptUri = this.getWebViewUri(
-      'out',
-      'snyk',
-      'snykCode',
-      'views',
-      'suggestion',
-      'codeSuggestionWebviewScript.js',
-    );
-    const styleVSCodeUri = this.getWebViewUri('media', 'views', 'common', 'vscode.css');
-    const styleUri = this.getWebViewUri('media', 'views', 'snykCode', 'suggestion', 'suggestion.css');
-    const learnStyleUri = this.getWebViewUri('media', 'views', 'common', 'learn.css');
+    const editor = vscode.window.visibleTextEditors.find(editor => editor.document.uri.fsPath === filePath);
+    if (!editor) {
+      return; // No open editor found with the target file
+    }
 
-    const nonce = getNonce();
-    return `
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; img-src ${webview.cspSource} https:; script-src 'nonce-${nonce}';">
+    const decorationOptions = generateDecorationOptions(diffData, this.languages);
+    if (decorationOptions.length === 0) {
+      return;
+    }
 
-      <link href="${styleVSCodeUri}" rel="stylesheet">
-      <link href="${styleUri}" rel="stylesheet">
-      <link href="${learnStyleUri}" rel="stylesheet">
-  </head>
-  <body>
-      <div class="suggestion">
-        <section class="suggestion--header">
-          <div id="severity">
-            <img id="sev1" class="icon hidden" src="${images['dark-low-severity']}" />
-            <img id="sev2" class="icon hidden" src="${images['dark-medium-severity']}" />
-            <img id="sev3" class="icon hidden" src="${images['dark-high-severity']}" />
-            <span id="severity-text"></span>
-          </div>
-          <div id="title" class="suggestion-title"></div>
-          <div id="meta" class="suggestion-metas">
-            <span id="navigateToIssue" class="clickable suggestion-position"></span>
-          </div>
-          <div class="learn learn__code">
-            <img class="icon" src="${images['learn-icon']}" />
-            <a class="learn--link"></a>
-          </div>
-        </section>
-        <section id="suggestion-info" class="delimiter-top">
-          <div id="description" class="suggestion-text"></div>
-          <div class="suggestion-links">
-            <div id="lead-url" class="clickable hidden">
-              <img class="icon" src="${images['icon-external']}" /> More info
-            </div>
-          </div>
-        </section>
-        <section class="delimiter-top">
-          <div id="info-top" class="font-light">
-            This <span class="issue-type">issue</span> was fixed by <span id="dataset-number"></span> projects. Here are <span id="example-number"></span> examples:
-          </div>
-          <div id="info-no-examples" class="font-light">
-            There are no fix examples for this issue.
-          </div>
-          <div id="example-top" class="row between">
-            <div id="current-example" class="repo clickable">
-              <img class="repo-icon icon" src="${images['icon-github']}"></img>
-              <span id="example-link" class="repo-link"></span>
-            </div>
-            <div class="examples-nav">
-              <span id="previous-example" class="arrow" title="Previous example">
-                <img src=${images['arrow-left-dark']} class="arrow-icon dark-only"></img>
-                <img src=${images['arrow-left-light']} class="arrow-icon light-only"></img>
-              </span>
-              <span id="example-text">
-                Example <strong id="example-counter">1</strong>/<span id="example-number2"></span>
-              </span>
-              <span id="next-example" class="arrow" title="Next example">
-                <img src=${images['arrow-right-dark']} class="arrow-icon dark-only"></img>
-                <img src=${images['arrow-right-light']} class="arrow-icon light-only"></img>
-              </span>
-            </div>
-          </div>
-          <div id="example"></div>
-        </section>
-        <section class="delimiter-top">
-          <div id="actions-section">
-            <div class="actions row">
-              <button id="ignore-line-issue" class="button">Ignore on line <span id="line-position2"></span></button>
-              <button id="ignore-file-issue" class="button">Ignore in this file</button>
-            </div>
-          </div>
-        </section>
-      </div>
-    <script nonce="${nonce}" src="${scriptUri}"></script>
-  </body>
-  </html>`;
+    editor.setDecorations(highlightDecoration, decorationOptions);
+
+    const firstLine = decorationOptions[0].range.start.line;
+
+    // scroll to first added line
+    const line = editor.document.lineAt(firstLine);
+    const range = line.range;
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+
+    // remove highlight on any of:
+    // - user types
+    // - saves the doc
+    // - after an amount of time
+
+    const removeHighlights = () => {
+      editor.setDecorations(highlightDecoration, []);
+      listeners.forEach(listener => {
+        if (listener instanceof vscode.Disposable) listener.dispose();
+        else clearTimeout(listener);
+      });
+    };
+
+    const documentEventHandler = (document: TextDocument) => {
+      if (document.uri.fsPath == filePath) {
+        removeHighlights();
+      }
+    };
+
+    const listeners = [
+      setTimeout(removeHighlights, 30000),
+      vscode.workspace.onDidSaveTextDocument(documentEventHandler),
+      vscode.workspace.onDidChangeTextDocument(e => documentEventHandler(e.document)),
+    ];
+  }
+
+  private getTitle(): string {
+    return WEBVIEW_PANEL_SECURITY_TITLE;
   }
 }

@@ -1,5 +1,4 @@
 import { Subscription } from 'rxjs';
-import { IAnalytics } from '../common/analytics/itly';
 import { IConfiguration } from '../common/configuration/configuration';
 import { IWorkspaceTrust } from '../common/configuration/trustedFolders';
 import { ILanguageServer } from '../common/languageServer/languageServer';
@@ -13,8 +12,11 @@ import { IVSCodeLanguages } from '../common/vscode/languages';
 import { IVSCodeWorkspace } from '../common/vscode/workspace';
 import { IacCodeActionsProvider } from './codeActions/iacCodeActionsProvider';
 import { IIacSuggestionWebviewProvider } from './views/interfaces';
+import { IDiagnosticsIssueProvider } from '../common/services/diagnosticsService';
 
 export class IacService extends ProductService<IacIssueData> {
+  public readonly productType = ScanProduct.InfrastructureAsCode;
+
   constructor(
     extensionContext: ExtensionContext,
     config: IConfiguration,
@@ -26,8 +28,8 @@ export class IacService extends ProductService<IacIssueData> {
     workspaceTrust: IWorkspaceTrust,
     languageServer: ILanguageServer,
     languages: IVSCodeLanguages,
+    readonly diagnosticsIssueProvider: IDiagnosticsIssueProvider<IacIssueData>,
     logger: ILog,
-    readonly analytics: IAnalytics,
   ) {
     super(
       extensionContext,
@@ -38,11 +40,12 @@ export class IacService extends ProductService<IacIssueData> {
       workspaceTrust,
       languageServer,
       languages,
+      diagnosticsIssueProvider,
       logger,
     );
 
     this.registerCodeActionsProvider(
-      new IacCodeActionsProvider(this.result, codeActionAdapter, codeActionKindAdapter, languages, analytics),
+      new IacCodeActionsProvider(this.result, codeActionAdapter, codeActionKindAdapter, languages),
     );
   }
 
